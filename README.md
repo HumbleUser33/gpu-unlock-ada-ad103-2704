@@ -49,23 +49,30 @@ and its [sanitized raw benchmark output](docs/evidence/ada2705/README.md).
 A second AD103 card — a **Dell OEM RTX 4080** (`10de:2704`, Dell subsystem
 `1028:5113`) on the Windows UEFI route — completed one cold transaction and a
 matched stock/unlocked cuBLAS bench (same script/library hashes both phases,
-torch 2.14.1+cu126, 4096² GEMM, full FP64 correctness checks passed in both
-states, including FP8):
+torch 2.14.1+cu126, 4096² GEMM, exact FP64 correctness in both states except
+the inherently inexact FP8/FP16-accumulate mode, which passed its documented
+per-MMA rounding bounds):
 
 | Mode | Stock | Unlocked | Wall ratio | SM clock | Power |
 |---|---:|---:|---:|---|---|
-| FP32 CUDA-core control (pedantic) | 37.35 TF/s | 37.33 TF/s | **1.000** | 2715 MHz both | 302 → 311 W |
-| FP16 → FP32 accumulate | 101.44 TF/s | 188.47 TF/s | **1.858** | 2805 → 2625 MHz | 212 → 299 W |
-| BF16 → FP32 accumulate | 101.16 TF/s | 192.62 TF/s | **1.904** | 2805 → 2670 MHz | 210 → 260 W |
-| E4M3 FP8 → FP32 (`torch._scaled_mm`) | 191.36 TF/s | 324.19 TF/s | **1.694** | 2805 → 2340 MHz | 276 → 285 W |
+| FP32 CUDA-core control (pedantic) | 37.33 TF/s | 37.15 TF/s | **0.995** | 2715 MHz both | 309 → 305 W |
+| FP16 → FP32 accumulate | 99.08 TF/s | 185.13 TF/s | **1.868** | 2805 → 2625 MHz | 213 → 304 W |
+| BF16 → FP32 accumulate | 98.92 TF/s | 194.29 TF/s | **1.964** | 2805 → 2625 MHz | 207 → 288 W |
+| E4M3 FP8 → FP32 (`torch._scaled_mm`) | 191.32 TF/s | 326.30 TF/s | **1.706** | 2805 → 2625 MHz | 276 → 307 W |
+| E4M3 FP8 → FP16 (`use_fast_accum=True`) | 202.87 TF/s | 339.12 TF/s | **1.672** | 2805 → 2400 MHz | 234 → 277 W |
 
-Clock-normalized (per-SM-cycle) ratios: **1.98× / 2.00× / 1.90×**, matching the
-register-resident issue-rate ratios measured on the 2705 card. Wall ratios sit
-below 2.0 because the unlocked tensor load pushes the card against its 320 W
-power ceiling; performance per watt improved 32–65% (e.g. BF16: 0.48 → 0.74
-TF/W, E4M3: 0.69 → 1.14 TF/W). The FP32 CUDA-core control moved 0.05%, so the
-change is tensor-path only. Stock rates at 93% of the AD103 half-rate ceiling
-confirm the throughput fuse on this SKU. See the
+Clock-normalized (per-SM-cycle) ratios: **2.00× / 2.10× / 1.82× / 1.95×**. Wall
+ratios sit below that because the unlocked tensor load pushes the card against
+its 320 W power ceiling; performance per watt improved 32–42% (best: E4M3/FP16
+at 0.87 → 1.23 TF/W). The FP32 CUDA-core control moved 0.5%, so the change is
+tensor-path only. The E4M3/FP16 result shows the fuse gates **both** FP8
+accumulator modes: the whitepaper's claimed FP8-FP16-accum 2× over
+FP8-FP32-accum is absent in stock (202.9 vs 191.3 TF/s) and does not appear
+after unlock either (339.1 vs 326.3, both power-capped) — on this part the
+whole tensor path simply moves to full rate.
+
+Matched v2 run hashes: `benchmark_sha256=ce37f017b5ce6296...`, cuBLAS
+`01d8172b25d8e2d2...` (unchanged from the earlier 4-mode run). See the
 [2704 Dell report](docs/ad103-2704-dell-report.md) and the full evidence in
 `windows/ad103-2705/results-2026-10-27/`.
 
