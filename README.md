@@ -53,18 +53,19 @@ torch 2.14.1+cu126, 4096² GEMM, exact FP64 correctness in both states except
 the inherently inexact FP8/FP16-accumulate mode, which passed its documented
 per-MMA rounding bounds):
 
-| Mode | Stock | Unlocked | Wall ratio | SM clock | Power |
-|---|---:|---:|---:|---|---|
-| FP32 CUDA-core control (pedantic) | 37.33 TF/s | 37.15 TF/s | **0.995** | 2715 MHz both | 309 → 305 W |
-| FP16 → FP32 accumulate | 99.08 TF/s | 185.13 TF/s | **1.868** | 2805 → 2625 MHz | 213 → 304 W |
-| BF16 → FP32 accumulate | 98.92 TF/s | 194.29 TF/s | **1.964** | 2805 → 2625 MHz | 207 → 288 W |
-| E4M3 FP8 → FP32 (`torch._scaled_mm`) | 191.32 TF/s | 326.30 TF/s | **1.706** | 2805 → 2625 MHz | 276 → 307 W |
-| E4M3 FP8 → FP16 (`use_fast_accum=True`) | 202.87 TF/s | 339.12 TF/s | **1.672** | 2805 → 2400 MHz | 234 → 277 W |
+| Mode | Stock | Unlocked | Wall ratio | SM clock | Power | TF/W |
+|---|---:|---:|---:|---|---|---|
+| FP32 CUDA-core control (pedantic) | 37.33 TF/s | 37.15 TF/s | **0.995** | 2715 MHz both | 309 → 305 W | 0.12 → 0.12 (×1.01) |
+| FP16 → FP32 accumulate | 99.08 TF/s | 185.13 TF/s | **1.868** | 2805 → 2625 MHz | 213 → 304 W | 0.46 → 0.61 (×1.31) |
+| BF16 → FP32 accumulate | 98.92 TF/s | 194.29 TF/s | **1.964** | 2805 → 2625 MHz | 207 → 288 W | 0.48 → 0.67 (×1.41) |
+| E4M3 FP8 → FP32 (`torch._scaled_mm`) | 191.32 TF/s | 326.30 TF/s | **1.706** | 2805 → 2625 MHz | 276 → 307 W | 0.69 → 1.06 (×1.53) |
+| E4M3 FP8 → FP16 (`use_fast_accum=True`) | 202.87 TF/s | 339.12 TF/s | **1.672** | 2805 → 2400 MHz | 234 → 277 W | 0.87 → 1.23 (×1.41) |
 
 Clock-normalized (per-SM-cycle) ratios: **2.00× / 2.10× / 1.82× / 1.95×**. Wall
 ratios sit below that because the unlocked tensor load pushes the card against
-its 320 W power ceiling; performance per watt improved 32–42% (best: E4M3/FP16
-at 0.87 → 1.23 TF/W). The FP32 CUDA-core control moved 0.5%, so the change is
+its 320 W power ceiling; performance per watt improved 31–53% (best: E4M3
+modes, +53% for FP8/FP32 and +41% for FP8/FP16 at 0.87 → 1.23 TF/W). The FP32
+CUDA-core control moved 0.5%, so the change is
 tensor-path only. The E4M3/FP16 result shows the fuse gates **both** FP8
 accumulator modes: the whitepaper's claimed FP8-FP16-accum 2× over
 FP8-FP32-accum is absent in stock (202.9 vs 191.3 TF/s) and does not appear
