@@ -96,7 +96,7 @@ static void BarJson(TEXT *t,DISPLAY *d,UINTN index,EFI_BOOT_SERVICES *bs) {
     TextPut(t,"}");
 }
 static void DisplayJson(TEXT *t,DISPLAY *d,EFI_BOOT_SERVICES *bs) {
-    UINTN i;UINT8 hash[32];BOOLEAN target=(BOOLEAN)(Read16(d->config)==0x10de&&Read16(d->config+2)==0x2782);
+    UINTN i;UINT8 hash[32];BOOLEAN target=(BOOLEAN)(Read16(d->config)==0x10de&&Read16(d->config+2)==0x2704);
     TextPut(t,"{\"vendor\":");TextHex(t,Read16(d->config),4);
     TextPut(t,",\"device_id\":");TextHex(t,Read16(d->config+2),4);
     TextPut(t,",\"subsystem_vendor\":");TextHex(t,Read16(d->config+44),4);
@@ -121,7 +121,7 @@ static void DisplayJson(TEXT *t,DISPLAY *d,EFI_BOOT_SERVICES *bs) {
     TextPut(t,",\"sha256\":");
     /* Hash only an exact expected card's bounded, structurally checked cached ROM. */
     if(target&&ExactTarget(d->config,64)&&d->pci->RomSize<=PROBE_ROM_MAX&&
-        RomPcirValid(d->pci->RomImage,(UINTN)d->pci->RomSize,0x10de,0x2782)) {
+        RomPcirValid(d->pci->RomImage,(UINTN)d->pci->RomSize,0x10de,0x2704)) {
         Sha256(d->pci->RomImage,(UINTN)d->pci->RomSize,hash);TextBytes(t,hash,32);
     } else TextPut(t,"null");
     TextPut(t,",\"source\":\"EFI_PCI_IO_PROTOCOL.RomImage; not a physical PROM dump\"}}");
@@ -146,7 +146,7 @@ static void EnumerateDisplays(EFI_BOOT_SERVICES *bs,TEXT *t) {
         d->location_valid=(BOOLEAN)(!EFI_ERROR(s)&&d->segment<=65535&&d->bus<=255&&d->device<32&&d->function<8);
         d->path=PathFor(bs,handles[i],&d->path_length,&d->multi);
         if(!d->location_valid||!d->path||d->multi) EnumerationComplete=FALSE;
-        if(Read16(config)==0x10de&&Read16(config+2)==0x2782) ++TargetCount;
+        if(Read16(config)==0x10de&&Read16(config+2)==0x2704) ++TargetCount;
         if(ExactTarget(config,64)) ++ExactCount;
         if(!first) TextPut(t,",");first=FALSE;DisplayJson(t,d,bs);
     }
@@ -267,7 +267,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE image,EFI_SYSTEM_TABLE *st) {
     /* Export only the already cached ROM, never read the physical ROM aperture. */
     TextPut(&t,",\"cached_rom_hex\":");
     if(target&&target->pci->RomSize==150016&&
-        RomPcirValid(target->pci->RomImage,(UINTN)target->pci->RomSize,0x10de,0x2782))
+        RomPcirValid(target->pci->RomImage,(UINTN)target->pci->RomSize,0x10de,0x2704))
         TextBytes(&t,target->pci->RomImage,(UINTN)target->pci->RomSize);
     else TextPut(&t,"null");
     TextPut(&t,",\"platform\":");SamplePlatform(&t,st,target?target->handle:NULL);

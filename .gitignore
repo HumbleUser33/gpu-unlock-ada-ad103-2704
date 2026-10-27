@@ -34,3 +34,7 @@ Module.symvers
 *.exe
 *.obj
 *.a
+
+/windows/ad103-2705/build/*.su
+
+/windows/ad103-2705/local/

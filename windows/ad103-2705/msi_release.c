@@ -428,7 +428,7 @@ static EFI_STATUS ReadConfig(UINT32 c[64]) {
   EFI_STATUS s=Interface(Plan.pci,&PciGuid,(VOID **)&io);
   if(s!=EFI_SUCCESS||io!=Gu.pci||!io->Pci.Read||!io->GetLocation)return EFI_NOT_READY;
   s=io->GetLocation(io,&seg,&bus,&dev,&fun);
-  if(s!=EFI_SUCCESS||seg||bus!=8||dev||fun)return EFI_UNSUPPORTED;
+  if(s!=EFI_SUCCESS||seg||bus!=5||dev||fun)return EFI_UNSUPPORTED;
   s=io->Pci.Read(io,EfiPciIoWidthUint32,0,64,c);
   if(s==EFI_SUCCESS&&(!GuTargetConfig(c,seg,bus,dev,fun)||(c[1]&4)))s=EFI_UNSUPPORTED;
   return s;

@@ -13,13 +13,13 @@ static EFI_STATUS Tick(unsigned n){CHECK(++Calls==n);return Case==n?EFI_DEVICE_E
 VOID GuInit(EFI_BOOT_SERVICES *b,EFI_PCI_IO_PROTOCOL *p){memset(&Gu,0,sizeof(Gu));Gu.bs=b;Gu.pci=p;}
 VOID GuLog(const char *f,...){(void)f;}
 VOID GuLogText(const char *f){(void)f;}
-BOOLEAN GuCheckConfig(const UINT32 c[64],UINTN s,UINTN b,UINTN d,UINTN f,GU_CAPS *caps){CHECK(c[0]==GU_BOARD_ID&&!s&&b==8&&!d&&!f);*caps=(GU_CAPS){0x60,0x78,0x68,0,2};return TRUE;}
+BOOLEAN GuCheckConfig(const UINT32 c[64],UINTN s,UINTN b,UINTN d,UINTN f,GU_CAPS *caps){CHECK(c[0]==GU_BOARD_ID&&!s&&b==5&&!d&&!f);*caps=(GU_CAPS){0x60,0x78,0x68,0,2};return TRUE;}
 static EFI_STATUS EFIAPI GetVariable(CHAR16 *name,EFI_GUID *guid,UINT32 *attrs,UINTN *n,VOID *v){(void)name;(void)guid;*attrs=0;*n=1;*(UINT8 *)v=Case==99?1:0;return EFI_SUCCESS;}
 static EFI_STATUS EFIAPI Locate(EFI_LOCATE_SEARCH_TYPE kind,EFI_GUID *guid,VOID *key,UINTN *n,EFI_HANDLE **out){(void)kind;(void)guid;(void)key;*n=1;*out=malloc(sizeof(**out));CHECK(*out);(*out)[0]=(EFI_HANDLE)2;return EFI_SUCCESS;}
 static EFI_STATUS EFIAPI Handle(EFI_HANDLE h,EFI_GUID *guid,VOID **p){(void)guid;CHECK(h==(EFI_HANDLE)2);*p=&Io;return EFI_SUCCESS;}
 static EFI_STATUS EFIAPI Free(VOID *p){free(p);return EFI_SUCCESS;}
 static EFI_STATUS EFIAPI Read(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_WIDTH w,UINT32 off,UINTN n,VOID *out){CHECK(p==&Io&&w==EfiPciIoWidthUint32&&!off&&(n==1||n==64));memset(out,0,n*4);((UINT32 *)out)[0]=GU_BOARD_ID;if(n==64)((UINT32 *)out)[2]=0x030000a1;return EFI_SUCCESS;}
-static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){(void)p;*s=*d=*f=0;*b=8;return EFI_SUCCESS;}
+static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){(void)p;*s=*d=*f=0;*b=5;return EFI_SUCCESS;}
 EFI_STATUS GuBootOpen(EFI_HANDLE i,EFI_SYSTEM_TABLE *t){CHECK(i==(EFI_HANDLE)1&&t==&St);return Tick(1);}
 EFI_STATUS GuBootLoadAssets(VOID){return Tick(2);}
 EFI_STATUS GuAd104Prepare(VOID){EFI_STATUS s=Tick(3);if(s==EFI_SUCCESS)Gu.profile_verified=Gu.prom_verified=TRUE;return s;}
@@ -31,7 +31,7 @@ VOID GuBootSilence(VOID){CHECK(Calls==6);Silenced=TRUE;}
 EFI_STATUS GuMsiRelease(VOID){CHECK(Silenced);Releases++;Mutated=TRUE;Gu.owned=TRUE;return Tick(7);}
 BOOLEAN GuMsiReleased(VOID){return Mutated&&Gu.owned;}
 BOOLEAN GuAd104ColdEntry(VOID){return TRUE;}
-int gpu_unlock_610_load_shared(struct pci_dev *d,struct gpu_unlock_610_shared *shared){CHECK(d->device==0x2705&&Gu.owned&&Gu.armed&&Gu.display_ok);(void)shared;return Tick(8)==EFI_SUCCESS?0:-EIO;}
+int gpu_unlock_610_load_shared(struct pci_dev *d,struct gpu_unlock_610_shared *shared){CHECK(d->device==0x2704&&Gu.owned&&Gu.armed&&Gu.display_ok);(void)shared;return Tick(8)==EFI_SUCCESS?0:-EIO;}
 int gpu_unlock_610_unlock(struct pci_dev *d,const struct gpu_unlock_610_shared *s){(void)d;(void)s;Transactions++;Gu.started=TRUE;Gu.quiesced=TRUE;Gu.flrs=1;return Tick(9)==EFI_SUCCESS?0:-EIO;}
 void gpu_unlock_610_release_shared(struct gpu_unlock_610_shared *s){(void)s;}
 BOOLEAN GuSafeToReturn(VOID){return TRUE;}

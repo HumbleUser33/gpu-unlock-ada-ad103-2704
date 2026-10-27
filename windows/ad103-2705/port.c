@@ -53,7 +53,7 @@ VOID GuInit(EFI_BOOT_SERVICES *Bs, EFI_PCI_IO_PROTOCOL *Pci) {
 #endif
 }
 BOOLEAN GuTargetConfig(const UINT32 *C, UINTN S, UINTN B, UINTN D, UINTN F) {
-  return C && !S && B==8 && !D && !F && C[0]==GU_BOARD_ID &&
+  return C && !S && B==5 && !D && !F && C[0]==GU_BOARD_ID &&
     C[11]==GU_BOARD_SUBSYSTEM && C[2]==0x030000a1U && !((C[3]>>16)&0x7f);
 }
 BOOLEAN GuSafeToReturn(VOID) {

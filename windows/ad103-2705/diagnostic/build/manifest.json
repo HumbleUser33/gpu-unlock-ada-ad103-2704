@@ -1,0 +1,21 @@
+﻿{
+    "version":  "0.4.0",
+    "build_id":  "5b259e4d46e7aeef259ad1361f2188bad04f5995eb99bdc578c55f398cc35048",
+    "binary":  "AD104-PROBE.EFI",
+    "sha256":  "7665a266cc4946901bf71d475b08caeba3642e61b5a082d0204f0055feef4cf3",
+    "source_sha256":  {
+                          "core.c":  "9de0447c8138599114e836ba1ecb21b103b7399a5342d9972bc72fe64b343000",
+                          "core.h":  "6bee50a61166e2d3d1eeb7751e679037f4fb93dca9fca5ad7c02ea28728339e0",
+                          "platform.c":  "22a92872897fdcc777b7b2cf4caf096d008ebf75c84ae74da0cfc925bbe4488f",
+                          "platform.h":  "6ffbde85fc76df6d7f310128f8910af73e30c15c65eb66d478973dde49506486",
+                          "probe.c":  "0c64172c12b9a4f55435cb338208360907a62eb1a42f65100688c5e76f3d3f4d",
+                          "runtime.c":  "b433570f0c9476872441f36fa6b20ace465cb8cada763c900de2372e277be6df",
+                          "sample.c":  "5389b0bd9e6ea441d5a2fd826ca95f8581c19260c9aafb7dc972cf3b0b334b6a",
+                          "sample.h":  "f40a4e1f186f158e15674b0af1054ccd2db124612a3c41d9fa0805f9fe365326"
+                      },
+    "hardware_tested":  false,
+    "gpu_write_capability":  false,
+    "mmio_read_capability":  true,
+    "validation":  "MSVC host mocks and PE checks",
+    "utc":  "2026-10-27T08:52:13.0119772Z"
+}

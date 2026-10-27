@@ -1,0 +1,9 @@
+{
+  "archive": "AD104-TRANSACTION.a",
+  "unresolved": [
+    "GuLog"
+  ],
+  "max_reported_function_stack": 528,
+  "has_efi_entry": false,
+  "hardware_test": false
+}

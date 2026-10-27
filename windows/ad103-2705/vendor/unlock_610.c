@@ -76,6 +76,7 @@ static const struct gpu_unlock_assets *unlock_assets(const struct pci_dev *pdev)
 
 	return (pdev->device == GU_AD102_RTX_4090 ||
 		pdev->device == GU_AD103_RTX_4070_TI_SUPER ||
+		pdev->device == GU_AD103_RTX_4080 ||
 		pdev->device == 0x2782u) ? &ad102 : &ga102;
 }
 
@@ -324,9 +325,10 @@ static bool inaccessible(u32 value)
 static bool is_ad102(const struct unlock_transaction_work *work)
 {
 	/* AD103 uses the same pinned AD102-family Booter archive. Hardware
-	 * behavior on 0x2705 still requires an exact-card canary. */
+	 * behavior on 0x2705/0x2704 still requires an exact-card canary. */
 	return work->pdev->device == GU_AD102_RTX_4090 ||
 	       work->pdev->device == GU_AD103_RTX_4070_TI_SUPER ||
+	       work->pdev->device == GU_AD103_RTX_4080 ||
 	       work->pdev->device == 0x2782u;
 }
 
@@ -1294,8 +1296,11 @@ static int unlock_transaction_gfw(struct unlock_transaction_work *work)
 				dev_err(&work->pdev->dev, "card already initialised since power on (WPR2 enabled); power off first\n");
 				return GU_RESULT(-EBUSY);
 			}
+            /* Cold SS1 is board-firmware specific: the MSI reference card reads
+             * 0x1 at cold; this Dell AD103 (1028:5113) reads 0x2 (CAP0002).
+             * Re-pinned, not relaxed: any other value still refuses. */
             if (!Gu.profile_verified || !GuEntrySelectorsMatch(ss0,ss1) ||
-                inaccessible(ss0) || ss0==GU_SS0_UNLOCK || ss1!=1 ||
+                inaccessible(ss0) || ss0==GU_SS0_UNLOCK || ss1!=2 ||
                 work->plm_entry!=0xffffff8f || sample.plm!=0x8b8f ||
                 sample.boot!=0x3ff || sample.cpuctl!=0x10 || wpr_hi)
                 return GU_RESULT(-EIO);
@@ -1709,7 +1714,7 @@ static int unlock_transaction_reset(struct unlock_transaction_work *work)
 
 int gpu_unlock_610_load_shared(struct pci_dev *pdev, struct gpu_unlock_610_shared *shared)
 {
-	if (!pdev || pdev->vendor!=0x10de || pdev->device!=0x2705u || !GuAd104AssetsValid()) return -ENODEV;
+	if (!pdev || pdev->vendor!=0x10de || pdev->device!=GU_AD103_RTX_4080 || !GuAd104AssetsValid()) return -ENODEV;
 	return request_scoped(&pdev->dev, &shared->gsp, unlock_assets(pdev)->gsp);
 }
 
@@ -1727,7 +1732,7 @@ int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shar
     /* No EFI application calls this library yet. A future ownership adapter
      * must prove exclusive release of GOP, console and all active consumers. */
     if (Gu.transaction_attempted) return -EALREADY;
-    if (!pdev || pdev->vendor!=0x10de || pdev->device!=0x2705u ||
+    if (!pdev || pdev->vendor!=0x10de || pdev->device!=GU_AD103_RTX_4080 ||
         !shared || shared->gsp!=&GuAssets[2].firmware || !GuAd104AssetsValid() ||
         !Gu.prom_verified || !Gu.profile_verified || !Gu.owned || !Gu.armed ||
         !Gu.display_ok || !Gu.display_check || !Gu.display_check() || Gu.fault ||

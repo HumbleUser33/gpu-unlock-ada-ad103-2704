@@ -58,7 +58,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE image,EFI_SYSTEM_TABLE *t) {
   if(!GuMsiReleased()||!GuAd104ColdEntry()){s=EFI_NOT_READY;goto failed;}
   Gu.display_check=GuMsiReleased;Gu.display_ok=TRUE;Gu.armed=TRUE;
   UINT64 mask=0xffffffffffffULL;
-  struct pci_dev dev={.vendor=0x10de,.device=0x2705u,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},
+  struct pci_dev dev={.vendor=0x10de,.device=0x2704u,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},
     .current_state=PCI_D0,.pm_cap=Gu.pm_cap,.refs=1};
   struct gpu_unlock_610_shared shared={0};
   stage="shared-assets";int result=gpu_unlock_610_load_shared(&dev,&shared);

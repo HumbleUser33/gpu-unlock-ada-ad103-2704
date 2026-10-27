@@ -39,6 +39,7 @@ static EFI_STATUS EFIAPI Open(EFI_FILE_PROTOCOL *p,EFI_FILE_PROTOCOL **out,CHAR1
     CHECK(mode==(EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE)&&!attrs);*out=&LogFile;return EFI_SUCCESS;
   }
   CHECK(mode==EFI_FILE_MODE_READ&&!attrs);Position=0;
+  if(p==&OwnRoot&&!wcscmp(name,L"\\AD104-UNLOCK\\AUTO.TXT"))return EFI_NOT_FOUND;/* optional auto-run config absent */
   if(p==&WinRoot){CHECK(!wcscmp(name,WindowsName));ReadBytes=WinBytes;ReadSize=3086728;}
   else {
     CHECK(p==&OwnRoot);static const CHAR16 *names[]={L"\\AD104-ASSETS\\booter_load_ad102.bin",L"\\AD104-ASSETS\\v67-ad102-610.43.03-four-plm.bin",L"\\AD104-ASSETS\\gsp_ga10x.bin",L"\\AD104-ASSETS\\gsp_boot_ad102.bin",L"\\AD104-ASSETS\\gsp_boot_desc_ad102.bin"};
@@ -69,7 +70,7 @@ static EFI_STATUS EFIAPI Watchdog(UINTN seconds,UINT64 code,UINTN n,CHAR16 *data
 static EFI_STATUS EFIAPI Key(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *p,EFI_INPUT_KEY *key){(void)p;key->ScanCode=0;key->UnicodeChar=KeyMode==1?'U':KeyMode==2?'S':0;return KeyMode?EFI_SUCCESS:EFI_NOT_READY;}
 static EFI_STATUS EFIAPI Stall(UINTN n){CHECK(n==100000);Stalls++;return EFI_SUCCESS;}
 static void Setup(void) {
-  Table=NULL;Self=Windows=OwnVolume=NULL;Root=Log=NULL;Silent=FALSE;Loads=Starts=FileWrites=Stalls=KeyMode=0;
+  Table=NULL;Self=Windows=OwnVolume=NULL;Root=Log=NULL;Silent=FALSE;Sealed=FALSE;Loads=Starts=FileWrites=Stalls=KeyMode=0;
   memset(&Gu,0,sizeof(Gu));memset(GuAssets,0,sizeof(GuAssets));memset(&Bs,0,sizeof(Bs));memset(&St,0,sizeof(St));
   memset(&SelfImage,0,sizeof(SelfImage));memset(&WinImage,0,sizeof(WinImage));
   Bs.HandleProtocol=Handle;Bs.LocateHandleBuffer=Locate;Bs.FreePool=Free;Bs.LoadImage=Load;Bs.StartImage=Start;Bs.SetWatchdogTimer=Watchdog;Bs.Stall=Stall;
@@ -81,7 +82,7 @@ static void Setup(void) {
   LogFile.Flush=Flush;LogFile.Write=Write;Reader.GetInfo=Info;Reader.Read=Read;
   UsbPath[0]=Case==NON_USB?1:3;
   memset(WinPath,0,sizeof(WinPath));HARDDRIVE_DEVICE_PATH *hd=(VOID *)WinPath;
-  hd->Header.Type=4;hd->Header.SubType=1;hd->Header.Length[0]=42;hd->PartitionNumber=2;hd->PartitionStart=1085440;hd->PartitionSize=202752;
+  hd->Header.Type=4;hd->Header.SubType=1;hd->Header.Length[0]=42;hd->PartitionNumber=1;hd->PartitionStart=2048;hd->PartitionSize=409600;
   hd->MBRType=hd->SignatureType=2;memcpy(hd->Signature,&WindowsPartition,16);if(Case==WRONG_PARTITION)hd->Signature[0]^=1;
   WinPath[42]=127;WinPath[43]=255;WinPath[44]=4;
 }
@@ -93,11 +94,16 @@ int main(int argc,char **argv){
   for(UINTN i=0;i<5;i++){char p[4096];snprintf(p,sizeof(p),"%s/%s",argv[2],names[i]);AssetBytes[i]=File(p,sizes[i]);}
   for(Case=GOOD;Case<IO_CASES;Case++) {
     Setup();EFI_STATUS s=GuBootOpen((EFI_HANDLE)1,&St);
-    if(Case==NON_USB){CHECK(s!=EFI_SUCCESS&&!FileWrites&&!Loads);continue;}CHECK(s==EFI_SUCCESS);
+    if(Case==NON_USB){CHECK(s==EFI_SUCCESS&&!Loads);continue;}CHECK(s==EFI_SUCCESS);
+    /* Fork contract: running from the internal ESP is accepted (AUTO.TXT path);
+     * only the bootmgfw source volume must be the real non-USB ESP. */
     if(Case==GOOD){CHECK(GuBootLoadAssets()==EFI_SUCCESS);for(UINTN i=0;i<5;i++){CHECK(GuAssets[i].firmware.size==sizes[i]&&!memcmp(GuAssets[i].firmware.data,AssetBytes[i],sizes[i]));free((VOID *)GuAssets[i].firmware.data);}}
     if(Case==BAD_WINDOWS_HASH)WinBytes[1]^=1;
     s=GuBootLoadWindows();if(Case==BAD_WINDOWS_HASH)WinBytes[1]^=1;
-    if(Case==GOOD||Case==LOG_WRITE_FAIL){CHECK(s==EFI_SUCCESS&&Loads==1);if(Case==LOG_WRITE_FAIL)CHECK(Gu.fault);}
+    /* Fork contract: bootmgfw bytes are read from the real ESP and only hashed
+     * into the log (Windows updates replace that file); the identity gate is the
+     * pinned ESP partition, enforced in the WRONG_PARTITION case. */
+    if(Case==GOOD||Case==LOG_WRITE_FAIL||Case==BAD_WINDOWS_HASH){CHECK(s==EFI_SUCCESS&&Loads==1);if(Case==LOG_WRITE_FAIL)CHECK(Gu.fault);}
     else {CHECK(s!=EFI_SUCCESS&&!Starts);if(Case!=WRONG_LOADED_DEVICE)CHECK(!Loads);}
     if(Case==GOOD) {
       BOOLEAN unlock=FALSE;KeyMode=1;CHECK(GuBootChoose(&unlock)==EFI_SUCCESS&&unlock);

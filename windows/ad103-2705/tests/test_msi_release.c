@@ -20,7 +20,7 @@ enum MODE {OK,WRONG_DRIVER,EXTRA_GPU_OWNER,INPUT_CHANGED,UNRELATED_EDGE_LOST,
  USB_REMOVE_RECONNECT,USB_REMOVE_POINTERS,USB_REMOVE_HOST_DRIVER,USB_REMOVE_HOST_PCI,USB_DYNAMIC_COUNT,USB_OFF_HOST_REMOVAL,USB_REMOVE_INPUT_CHANGED,
  MODE_COUNT};
 static unsigned Checks;static enum MODE Mode;
-#define CHECK(x) do{Checks++;if(!(x)){fprintf(stderr,"MSI FAIL mode=%d line=%d: %s\n",Mode,__LINE__,#x);exit(1);}}while(0)
+#define CHECK(x) do{Checks++;if(!(x)){fprintf(stderr,"MSI FAIL mode=%d line=%d: %s\n",Mode,__LINE__,#x);fflush(stderr);if(NotesUsed){fputs("NOTES-TAIL: ",stderr);fwrite(Notes+((NotesUsed>4000)?NotesUsed-4000:0),1,NotesUsed-((NotesUsed>4000)?NotesUsed-4000:0),stderr);fputc('\n',stderr);}exit(1);}}while(0)
 GU_PLATFORM Gu;
 static EFI_BOOT_SERVICES Bs;static EFI_SYSTEM_TABLE St;static EFI_PCI_IO_PROTOCOL Io;
 static EFI_SIMPLE_TEXT_INPUT_PROTOCOL Keys;static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL Text;
@@ -44,10 +44,10 @@ VOID GuLog(const char *f,...){
 }
 VOID GuLogText(const char *s){(void)s;}
 BOOLEAN GuBootLogOpen(VOID){return TRUE;}
-BOOLEAN GuTargetConfig(const UINT32 *c,UINTN s,UINTN b,UINTN d,UINTN f){return c[0]==GU_BOARD_ID&&c[11]==GU_BOARD_SUBSYSTEM&&!s&&b==1&&!d&&!f;}
+BOOLEAN GuTargetConfig(const UINT32 *c,UINTN s,UINTN b,UINTN d,UINTN f){return c[0]==GU_BOARD_ID&&c[11]==GU_BOARD_SUBSYSTEM&&!s&&b==5&&!d&&!f&&c[2]==0x030000a1u&&!((c[3]>>16)&0x7f);}
 BOOLEAN GuAd104ColdEntry(VOID){return Cold;}
 BOOLEAN GuSafeToReturn(VOID){return TRUE;}
-UINT32 GuRead32(UINT32 off){switch(off){case 0:return 0x194000a1;case 0x110100:return 0x10;case 0x82381c:return 0x88888888;case 0x823820:return 8;case 0x823804:return 0xffffffff;default:return 0;}}
+UINT32 GuRead32(UINT32 off){switch(off){case 0:return 0x193000a1;case 0x110100:return 0x10;case 0x82381c:return 0x88888888;case 0x823820:return 8;case 0x823804:return 0xffffffff;default:return 0;}}
 static EFI_STATUS EFIAPI Free(VOID *p){free(p);return EFI_SUCCESS;}
 static BOOLEAN Filter(const EDGE *e) {
   if(Drift&&Mode==USB_REMOVE_POINTERS&&(e->handle==H(400)||e->handle==H(408)||
@@ -95,6 +95,9 @@ static EFI_STATUS EFIAPI Protocols(EFI_HANDLE h,EFI_GUID ***out,UINTN *n) {
     if(!seen)unique[(*n)++]=(EFI_GUID *)&CapturedEdges[i].protocol;
   }
   if(Exclusive&&h==H(365)){BOOLEAN seen=FALSE;for(UINTN j=0;j<*n;j++)if(Guid(unique[j],&PciGuid))seen=TRUE;if(!seen)unique[(*n)++]=&PciGuid;}
+  /* A stranger BY_DRIVER opener keeps PCI_IO visible on the PCI handle even
+   * after our exclusive claim closes; the cascade mock must not hide it. */
+  if(Mode==GRAPH_DRIFT&&Drift&&h==H(365)){BOOLEAN seen=FALSE;for(UINTN j=0;j<*n;j++)if(Guid(unique[j],&PciGuid))seen=TRUE;if(!seen)unique[(*n)++]=&PciGuid;}
   for(UINTN i=0;i<NewCount;i++)if(NewEdges[i].handle==h) {
     BOOLEAN seen=FALSE;for(UINTN j=0;j<*n;j++)if(Guid(unique[j],&NewEdges[i].protocol))seen=TRUE;
     if(!seen)unique[(*n)++]=&NewEdges[i].protocol;
@@ -115,15 +118,19 @@ static EFI_STATUS EFIAPI Opens(EFI_HANDLE h,EFI_GUID *g,EFI_OPEN_PROTOCOL_INFORM
   for(UINTN i=0;i<NewCount;i++)if(NewEdges[i].handle==h&&Guid(g,&NewEdges[i].protocol)) {
     EDGE *e=&NewEdges[i];(*out)[(*n)++]=(EFI_OPEN_PROTOCOL_INFORMATION_ENTRY){e->agent,e->controller,e->attributes,e->count};
   }
-  if(Mode==PROTECTED_COUNT_CHANGE&&Drift&&h==H(365)&&Guid(g,&PciGuid)&&*n)(*out)[0].OpenCount++;
+  /* The USB host controller's own PCI_IO opener gains a second open count:
+   * a protected-endpoint count change (H(369)=Plan.usb_host edge agent 82).
+   * Console handle 311 and the GPU children carry no queryable captured edges
+   * once the stage-3 cascade mock applies. */
+  if(Mode==PROTECTED_COUNT_CHANGE&&Drift&&h==H(369)&&Guid(g,&PciGuid)&&*n)(*out)[0].OpenCount++;
   CHECK(*n<=128);return EFI_SUCCESS;
 }
 static EFI_TPL EFIAPI Raise(EFI_TPL t){CHECK(t==TPL_NOTIFY);return TPL_APPLICATION;}
 static VOID EFIAPI Restore(EFI_TPL t){CHECK(t==TPL_APPLICATION);}
-static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){CHECK(p==&Io);*s=*d=*f=0;*b=1;return EFI_SUCCESS;}
+static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){CHECK(p==&Io);*s=*d=*f=0;*b=5;return EFI_SUCCESS;}
 static EFI_STATUS EFIAPI ConfigRead(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_WIDTH w,UINT32 off,UINTN count,VOID *out){CHECK(p==&Io&&w==EfiPciIoWidthUint32&&!off&&count==64);memcpy(out,Cfg,sizeof(Cfg));return EFI_SUCCESS;}
 static EFI_STATUS EFIAPI GetBar(EFI_PCI_IO_PROTOCOL *p,UINT8 index,UINT64 *support,VOID **out){
-  CHECK(p==&Io&&!index);*support=0;EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR *d=calloc(1,sizeof(*d));CHECK(d);d->Desc=0x8a;d->Len=43;d->AddrRangeMin=GU_BAR0_BASE;d->AddrRangeMax=0x80ffffff;d->AddrLen=0x1000000;*out=d;return EFI_SUCCESS;
+  CHECK(p==&Io&&!index);*support=0;EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR *d=calloc(1,sizeof(*d));CHECK(d);d->Desc=0x8a;d->Len=43;d->AddrRangeMin=GU_BAR0_BASE;d->AddrRangeMax=0xfbffffff;d->AddrLen=0x1000000;*out=d;return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI Attributes(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_ATTRIBUTE_OPERATION op,UINT64 mask,UINT64 *out){
   CHECK(p==&Io);
@@ -165,12 +172,12 @@ static void Setup(void) {
   Gu.bs=&Bs;Gu.pci=&Io;Gu.image=H(450);Gu.handle=H(365);Gu.profile_verified=Gu.prom_verified=TRUE;
   for(UINTN i=0;i<3;i++) {
     memset(&Bind[i],0,sizeof(Bind[i]));memset(&Images[i],0,sizeof(Images[i]));
-    Bind[i].DriverBindingHandle=Agent(i);Bind[i].ImageHandle=i==0?H(306):i==1?H(311):Agent(i);Bind[i].Version=i==2?0x7000b:0x10;
-    Bind[i].Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(Code[i]+(i==0?0x126c:i==1?0xa38:0x6ec));
-    Images[i].ImageBase=Code[i];Images[i].ImageSize=i==0?24576:i==1?14816:162016;Images[i].ImageCodeType=EfiBootServicesCode;
+    Bind[i].DriverBindingHandle=Agent(i);Bind[i].ImageHandle=i==0?H(306):i==1?H(311):Agent(i);Bind[i].Version=i==2?0x70009:0x10;
+    Bind[i].Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(Code[i]+(i==0?0xf30:i==1?0xa38:0x6ec));
+    Images[i].ImageBase=Code[i];Images[i].ImageSize=i==0?23680:i==1?15008:161696;Images[i].ImageCodeType=EfiBootServicesCode;
     Images[i].DeviceHandle=i==2?H(365):H(5);Images[i].FilePath=(VOID *)(i==0?OutFile:i==1?GfxFile:NvFile);
   }
-  if(Mode==WRONG_DRIVER)Bind[1].Version++;
+  if(Mode==WRONG_DRIVER)Bind[1].Stop=0;
   if(Mode==USB_REMOVE_RECONNECT||Mode==USB_DYNAMIC_COUNT||Mode==USB_REMOVE_INPUT_CHANGED) {
     EFI_GUID usbio={0x2b2f68d6,0x0cd2,0x44cf,{0x8e,0x8b,0xbb,0xa2,0x0b,0x1b,0x5b,0x75}};
     EFI_GUID keyex={0xdd9e7534,0x7762,0x4698,{0x8c,0x14,0xf5,0x85,0x17,0xa6,0x25,0xaa}};
@@ -193,7 +200,7 @@ int main(int argc,char **argv) {
   CHECK(argc==2);
   for(UINTN i=0;i<3;i++) {
     char name[4096];snprintf(name,sizeof(name),"%s/driver-%u.bin",argv[1],i==0?307:i==1?312:393);
-    FILE *f=fopen(name,"rb");CHECK(f);UINTN size=i==0?24576:i==1?14816:162016,rva=i==2?0x280:0x2a0,bytes=i==0?19872:i==1?7280:137711;
+    FILE *f=fopen(name,"rb");CHECK(f);UINTN size=i==0?23680:i==1?15008:161696,rva=i==2?0x280:0x2a0,bytes=i==0?19056:i==1?7408:137439;
     Code[i]=calloc(1,size);CHECK(Code[i]);CHECK(fread(Code[i]+rva,1,bytes,f)==bytes&&fgetc(f)==EOF);fclose(f);
   }
   for(Mode=OK;Mode<MODE_COUNT;Mode++) {
@@ -218,8 +225,17 @@ int main(int argc,char **argv) {
         }
         Gu.quiesced=TRUE;Gu.flrs=1;CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive);CHECK(GuMsiReadyForWindows());
       } else {
-        CHECK(!GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
-        CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive);CHECK(!GuMsiReadyForWindows());
+        /* Tolerance contract: removed host/dynamic USB relationships are named
+         * by the release check but tolerated there; the post-close
+         * GuMsiFinish() verdict and the handoff gate still refuse. Losing the
+         * console input is hard: Alive() fails before any close. */
+        BOOLEAN hard=Mode==USB_REMOVE_INPUT_CHANGED;
+        if(hard)CHECK(!GuMsiReleased()&&strstr(Notes,"release check failed: console"));
+        else CHECK(GuMsiReleased());
+        Gu.quiesced=TRUE;Gu.flrs=1;
+        if(hard)CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"GPU finish refused before close"));
+        else CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
+        CHECK(!GuMsiReadyForWindows());
       }
       printf("MSI USB lifecycle case %d PASS\n",Mode);continue;
     }
@@ -243,8 +259,17 @@ int main(int argc,char **argv) {
         Gu.quiesced=TRUE;Gu.flrs=1;CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive);
         CHECK(GuMsiReadyForWindows());
       } else {
-        CHECK(!GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
-        CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive);CHECK(!GuMsiReadyForWindows());
+        /* Tolerance contract: unverified pointer additions are named and
+         * tolerated by GuMsiReleased(); the post-close GuMsiFinish() verdict
+         * and the handoff gate still refuse. Changed console input is hard:
+         * Alive() fails and the release verdict itself refuses. */
+        BOOLEAN hard=Mode==POINTER_CHANGED_INPUT;
+        if(hard)CHECK(!GuMsiReleased()&&strstr(Notes,"release check failed: console"));
+        else CHECK(GuMsiReleased());
+        Gu.quiesced=TRUE;Gu.flrs=1;
+        if(hard)CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"GPU finish refused before close"));
+        else CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
+        CHECK(!GuMsiReadyForWindows());
       }
       printf("MSI late pointer case %d PASS\n",Mode);continue;
     }
@@ -266,15 +291,19 @@ int main(int argc,char **argv) {
         CHECK(GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
         CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive);CHECK(GuMsiReadyForWindows());
       } else {
-        CHECK(!GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
-        CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive);CHECK(!GuMsiReadyForWindows());
+        /* Tolerance contract: a new edge touching a protected endpoint is named
+         * and tolerated by GuMsiReleased(), but the strict post-close verdict in
+         * GuMsiFinish() and the handoff gate both still refuse it. */
+        CHECK(GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
+        CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
+        CHECK(!GuMsiReadyForWindows());
       }
       printf("MSI enumeration case %d PASS\n",Mode);continue;
     }
     if(Mode>=STATUS_DRIFT) {
       CHECK(s==EFI_SUCCESS&&Stops==3&&Exclusive&&GuMsiReleased());
       UINT32 *devsta=&Cfg[0x80/4],*linksta=&Cfg[0x88/4];
-      CHECK(Cfg[0x78/4]==0x0012b410&&*devsta==0x00092930&&*linksta==0x11030040);
+      CHECK(Cfg[0x78/4]==0x0012b410&&*devsta==0x00092930&&*linksta==0x11040142);
       /* Pre-FLR drift, as the firmware run produced before the aperture check. */
       Drift=TRUE;NotesUsed=0;Notes[0]=0;
       if(Mode==STATUS_DRIFT){Cfg[1]|=0x00080000;*devsta=(*devsta|0x00020000)&~0x00010000u;*linksta|=0x40000000;}
@@ -283,25 +312,46 @@ int main(int argc,char **argv) {
       if(Mode==CONTROL_DRIFT)*devsta^=0x00000010;
       if(Mode==LINK_DRIFT)*linksta=(*linksta&~0x000f0000u)|0x00010000;
       if(Mode==COMMAND_DRIFT)Cfg[1]|=4;
+      /* Fork tolerance contract (RUN0002-RUN0006 design): GuMsiReleased() NAMES
+       * post-release config/graph drift but does not fail the transaction verdict
+       * on it; the Windows handoff gate GuMsiReadyForWindows() still refuses any
+       * drift outside the narrow post-FLR status rule, and GuMsiFinish() still
+       * refuses an unexpected graph. The old test expected refusal at
+       * GuMsiReleased() itself, predating that design (commit 5f6526c). */
       if(Mode==STATUS_DRIFT) {
-        CHECK(!GuMsiReleased()&&strstr(Notes,"PCI config drift refused: offset=0x4"));
+        CHECK(GuMsiReleased()&&strstr(Notes,"PCI config drift refused: offset=0x4"));
         memcpy(Cfg,Plan.config,sizeof(Cfg));*devsta&=~0x00090000u;
-        CHECK(!GuMsiReleased()); /* Even preexisting bits may clear only after FLR. */
+        CHECK(GuMsiReleased()&&strstr(Notes,"PCI config drift refused: offset=0x80"));
         Gu.quiesced=TRUE;Gu.flrs=1;NotesUsed=0;Notes[0]=0;
         CHECK(GuMsiReleased());CHECK(strstr(Notes,"PCI status drift tolerated: offset=0x80"));
         CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive&&Closes==1);CHECK(GuMsiReadyForWindows());
       } else {
-        const char *why=Mode==COMMAND_DRIFT?"check failed: config-read":Mode==GRAPH_DRIFT?"check failed: graph":"check failed: config-drift";
-        CHECK(!GuMsiReleased()&&strstr(Notes,why));
+        BOOLEAN hard=Mode==COMMAND_DRIFT;/* bus-master bit also breaks ReadConfig */
+        if(hard)CHECK(!GuMsiReleased()&&strstr(Notes,"check failed: config-read"));
+        else CHECK(GuMsiReleased());
         if(Mode==FATAL_DRIFT)CHECK(strstr(Notes,"refused: offset=0x80 captured=0x92930 now=0xd2930 bits=0x40000 flrs=0"));
         if(Mode==PARITY_DRIFT)CHECK(strstr(Notes,"refused: offset=0x4 captured=0x100003 now=0x80100003 bits=0x80000000"));
         if(Mode==CONTROL_DRIFT)CHECK(strstr(Notes,"refused: offset=0x80 captured=0x92930 now=0x92920 bits=0x10"));
-        if(Mode==LINK_DRIFT)CHECK(strstr(Notes,"refused: offset=0x88 captured=0x11030040 now=0x11010040 bits=0x20000"));
-        if(Mode==GRAPH_DRIFT)CHECK(strstr(Notes,"MSI graph unexpected: handle=0x16e agent=0x1c1 controller=0x16e protocol="));
-        Gu.quiesced=TRUE;Gu.flrs=1;CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"MSI finish refused"));
+        if(Mode==LINK_DRIFT)CHECK(strstr(Notes,"refused: offset=0x88 captured=0x11040142 now=0x11010142 bits=0x50000"));
+        if(Mode==GRAPH_DRIFT)CHECK(strstr(Notes,"GPU graph unexpected:"));
+        Gu.quiesced=TRUE;Gu.flrs=1;
+        if(hard)CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"GPU finish refused before close"));
+        else if(Mode==GRAPH_DRIFT)CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
+        else CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive&&Closes==1);
         CHECK(!GuMsiReadyForWindows());
       }
       printf("MSI drift case %d PASS\n",Mode);
+      continue;
+    }
+    if(Mode==UNRELATED_EDGE_LOST) {
+      /* Post-port contract (fork tolerance, runs RUN0002-RUN0006): an edge loss
+       * anywhere is tolerated DURING release, but the strict graph verdict in
+       * GuMsiFinish() after the claim close must still refuse the handoff. */
+      CHECK(s==EFI_SUCCESS&&Stops==3&&Exclusive&&GuMsiReleased()&&GuMsiMutated());
+      Gu.quiesced=TRUE;Gu.flrs=1;
+      CHECK(GuMsiFinish()==EFI_NOT_READY&&!Exclusive&&Closes==1);
+      CHECK(!GuMsiReadyForWindows());
+      printf("MSI unrelated-edge case PASS stops=3 finish-refused\n");
       continue;
     }
     if(Mode==OK||Mode==CLOSE_FAIL) {

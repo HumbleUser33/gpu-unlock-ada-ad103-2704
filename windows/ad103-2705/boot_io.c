@@ -17,9 +17,9 @@ static BOOLEAN Silent,Sealed;
 static EFI_GUID LoadedGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID,FsGuid=EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 static EFI_GUID PathGuid=EFI_DEVICE_PATH_PROTOCOL_GUID,InfoGuid=EFI_FILE_INFO_ID;
 static const EFI_GUID WindowsPartition=GU_WINDOWS_PARTITION_INITIALIZER;
-/* The unlock EFI takes over the firmware's original target and chains to the
- * renamed real boot manager, so no BCD/NVRAM entry has to be edited. */
-static const CHAR16 WindowsName[]=L"\\EFI\\Microsoft\\Boot\\bootmgfw.orig.efi";
+/* USB route: nothing on the ESP is renamed. The staged image is the real,
+ * original boot manager, loaded and started read-only from the USB run. */
+static const CHAR16 WindowsName[]=L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
 
 static BOOLEAN Inspect(const EFI_DEVICE_PATH_PROTOCOL *p,UINTN *size,BOOLEAN *usb,BOOLEAN *windows) {
   UINTN at=0,hd=0;*usb=FALSE;*windows=FALSE;
@@ -41,7 +41,7 @@ static BOOLEAN Inspect(const EFI_DEVICE_PATH_PROTOCOL *p,UINTN *size,BOOLEAN *us
       hd++;
       const HARDDRIVE_DEVICE_PATH *d=(const VOID *)p;
       if(d->MBRType==2&&d->SignatureType==2&&d->PartitionNumber==1&&d->PartitionStart==2048&&
-         d->PartitionSize==614400&&!memcmp(d->Signature,&WindowsPartition,16))*windows=TRUE;
+         d->PartitionSize==409600&&!memcmp(d->Signature,&WindowsPartition,16))*windows=TRUE;
     }
     at+=n;p=(const VOID *)((const UINT8 *)p+n);
   }

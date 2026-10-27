@@ -51,17 +51,17 @@ static EFI_STATUS EFIAPI MemoryRead(EFI_PCI_IO_PROTOCOL *self,EFI_PCI_IO_PROTOCO
     CHECK(found);MemoryReads++;
     if(FailMemory&&MemoryReads==2) return EFI_DEVICE_ERROR;
     if(ChangeIdentity&&MemoryReads==1) Config[0][8]^=1;
-    *(UINT32 *)out=offset==0?0x194000a1u:0;
+    *(UINT32 *)out=offset==0?0x193000a1u:0;
     return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *self,UINTN *seg,UINTN *bus,UINTN *dev,UINTN *fun) {
     if(FailedLocation) return EFI_DEVICE_ERROR;
-    *seg=0;*bus=self==&MockPci[0]?1:0;*dev=self==&MockPci[0]?0:2;*fun=0;return EFI_SUCCESS;
+    *seg=0;*bus=self==&MockPci[0]?5:0;*dev=self==&MockPci[0]?0:2;*fun=0;return EFI_SUCCESS;
 }
 static EFI_STATUS EFIAPI Bar(EFI_PCI_IO_PROTOCOL *self,UINT8 index,UINT64 *supports,VOID **resources) {
     UINT8 *p; (void)self;CHECK(index<6);BarReads++;*supports=0;
-    p=calloc(1,46);CHECK(p!=NULL);p[0]=0x8a;p[1]=43;p[3]=0;p[17]=0x80;p[41]=1;
-    p[22]=0xff;p[23]=0xff;p[24]=0xff;p[25]=0x80;
+    p=calloc(1,46);CHECK(p!=NULL);p[0]=0x8a;p[1]=43;p[3]=0;p[17]=0xfb;p[41]=1;
+    p[22]=0xff;p[23]=0xff;p[24]=0xff;p[25]=0xfb;
     if(CorruptResource) p[3]=1;
     *resources=p;return EFI_SUCCESS;
 }
@@ -132,10 +132,10 @@ static void Setup(unsigned scenario) {
     memset(Config,0,sizeof(Config));memset(&Root,0,sizeof(Root));memset(&Directory,0,sizeof(Directory));memset(&Log,0,sizeof(Log));memset(&Existing,0,sizeof(Existing));
     memset(Rom,0,sizeof(Rom));memset(Written,0,sizeof(Written));memset(Displays,0,sizeof(Displays));
     Rom[0]=0x55;Rom[1]=0xaa;Rom[0x18]=0x40;memcpy(Rom+0x40,"PCIR",4);
-    Rom[0x44]=0xde;Rom[0x45]=0x10;Rom[0x46]=0x82;Rom[0x47]=0x27;Rom[0x4a]=0x18;Rom[0x50]=1;Rom[0x55]=0x80;
-    Config[0][0]=0xde;Config[0][1]=0x10;Config[0][2]=0x82;Config[0][3]=0x27;
-    Config[0][11]=3;Config[0][44]=0x62;Config[0][45]=0x14;Config[0][46]=0x32;Config[0][47]=0x51;
-    Config[0][4]=3;Config[0][8]=0xa1;Config[0][16]=0;Config[0][19]=0x80;
+    Rom[0x44]=0xde;Rom[0x45]=0x10;Rom[0x46]=0x04;Rom[0x47]=0x27;Rom[0x4a]=0x18;Rom[0x50]=1;Rom[0x55]=0x80;
+    Config[0][0]=0xde;Config[0][1]=0x10;Config[0][2]=0x04;Config[0][3]=0x27;
+    Config[0][11]=3;Config[0][44]=0x28;Config[0][45]=0x10;Config[0][46]=0x13;Config[0][47]=0x51;
+    Config[0][4]=3;Config[0][8]=0xa1;Config[0][16]=0;Config[0][19]=0xfb;
     Config[1][0]=0x86;Config[1][1]=0x80;Config[1][2]=1;Config[1][11]=3;
     if(scenario==1) Config[0][46]^=1;
     if(scenario==3) Config[0][2]=0x05,Config[0][3]=0x27;
@@ -173,9 +173,9 @@ static void TestCore(void) {
     memcpy(bad,TargetPath,sizeof(TargetPath));bad[7]=1;memcpy(bad+10,TargetPath,sizeof(TargetPath));
     CHECK(DpMeasure(bad,20,&n,&multi)&&multi);CHECK(!DpParent(bad,20,TargetGopPath,sizeof(TargetGopPath)));
     Setup(0);CHECK(ExactTarget(Config[0],64));CHECK(!ExactTarget(Config[0],63));Config[0][14]=1;CHECK(!ExactTarget(Config[0],64));
-    CHECK(RomPcirValid(Rom,512,0x10de,0x2782));Rom[0x50]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2782));
-    Rom[0x50]=1;Rom[0x55]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2782));
-    Rom[0x55]=0x80;Rom[0x18]=0xff;Rom[0x19]=0xff;CHECK(!RomPcirValid(Rom,512,0x10de,0x2782));
+    CHECK(RomPcirValid(Rom,512,0x10de,0x2704));Rom[0x50]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2704));
+    Rom[0x50]=1;Rom[0x55]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2704));
+    Rom[0x55]=0x80;Rom[0x18]=0xff;Rom[0x19]=0xff;CHECK(!RomPcirValid(Rom,512,0x10de,0x2704));
 }
 static void TestApplication(void) {
     unsigned scenario;

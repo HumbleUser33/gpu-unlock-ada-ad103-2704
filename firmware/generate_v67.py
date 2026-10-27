@@ -8,6 +8,7 @@ import argparse
 import json
 import hashlib
 import subprocess
+import shutil
 import tarfile
 from pathlib import Path
 
@@ -86,6 +87,17 @@ def sha256(data: bytes) -> str:
 
 def extract_member(package: Path, name: str) -> bytes:
     if package.name.endswith(".zst"):
+        if shutil.which("zstd") is None:
+            # No zstd binary on this platform: use the native zstd module
+            # (Python >= 3.14). Same bytes, no external process.
+            import io
+            try:
+                from compression import zstd as _zstd
+            except ImportError:
+                raise ValueError("zstd binary not found and no native zstd module")
+            with tarfile.open(fileobj=io.BytesIO(_zstd.decompress(package.read_bytes())),
+                              mode="r|") as archive:
+                return read_member(archive, name)
         process = subprocess.Popen(["zstd", "-dc", str(package)], stdout=subprocess.PIPE)
         try:
             with tarfile.open(fileobj=process.stdout, mode="r|") as archive:

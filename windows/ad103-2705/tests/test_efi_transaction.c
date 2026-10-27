@@ -4,9 +4,9 @@
 #ifdef GU_ENTRY_LATCHED
 /* Test fixture baseline only, never a production fixed-selector definition. */
 #ifndef GU_STOCK_PROFILE_SS0
-#define GU_STOCK_PROFILE_SS0 0x23703005U
+#define GU_STOCK_PROFILE_SS0 0x76225066U
 #endif
-static UINT32 test_entry_ss0=0x23703005U,test_entry_ss1=1;
+static UINT32 test_entry_ss0=0x76225066U,test_entry_ss1=2;
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,14 +130,14 @@ static VOID check_fwsec_image(void) {
 #ifdef GU_AD104_TRANSACTION
   struct gpu_unlock_fwsec fw;UINT32 sig_at;
   CHECK(!gpu_unlock_vbios_fwsec(prom,sizeof(prom),&fw));
-  CHECK(fw.image_off==0x45488 && fw.image_size==0x10300 && fw.dmem_size==0xd80);
+  CHECK(fw.image_off==0x45180 && fw.image_size==0x10000 && fw.dmem_size==0xd80);
   CHECK(!gpu_unlock_fwsec_sig_offset(fw.sig_versions,1,384,&sig_at));
   UINT64 last_source=((UINT64)registers[(GSP+0x110)/4]<<8)|((UINT64)registers[(GSP+0x128)/4]<<40);
   UINT8 *image=dma_pointer(last_source-fw.data_off,fw.image_size);
   CHECK(!memcmp(gsp_dmem,image+fw.data_off,sizeof(gsp_dmem)));
   CHECK(!memcmp(gsp_dmem+fw.pkc_off,prom+fw.sig_off+sig_at,384));
   UINT8 expected[0x10300];memcpy(expected,prom+fw.image_off,sizeof(expected));
-  CHECK(!gpu_unlock_fwsec_patch_frts(expected,&fw,0x2ff800000ULL));
+  CHECK(!gpu_unlock_fwsec_patch_frts(expected,&fw,0x3ff600000ULL));
   memcpy(expected+fw.data_off+fw.pkc_off,prom+fw.sig_off+sig_at,384);
   CHECK(!memcmp(gsp_dmem,expected+fw.data_off,sizeof(gsp_dmem)));
 #else
@@ -154,13 +154,11 @@ static VOID check_booter_publication(void) {
   UINT8 *meta=dma_pointer(meta_address,256);fake.meta_dma=meta_address;
   CHECK(le64(meta)==GU_WPR_META_MAGIC && le64(meta+8)==1);
   CHECK(le64(meta+24)==0x5053000 && le64(meta+80)==0xfa00);
-  UINT64 delta=0;
-#ifdef GU_AD104_TRANSACTION
-  delta=0x7fa00000ULL;
-#endif
-  CHECK(le64(meta+112)==0x275400000ULL+delta && le64(meta+136)==0x27ada0000ULL+delta);
-  CHECK(le64(meta+144)==0x27fdf7000ULL+delta && le64(meta+152)==0x27fe00000ULL+delta);
-  CHECK(le64(meta+168)==0x27ff00000ULL+delta && le64(meta+176)==0x280000000ULL+delta);
+  /* Layout absolute addresses derived from this card's FB_SIZE_MB=0x3ff8
+   * (CAP0002), as computed by layout_610 and logged at runtime. */
+  CHECK(le64(meta+112)==0x3f4c00000ULL && le64(meta+136)==0x3fa5a0000ULL);
+  CHECK(le64(meta+144)==0x3ff5f7000ULL && le64(meta+152)==0x3ff600000ULL);
+  CHECK(le64(meta+168)==0x3ff700000ULL && le64(meta+176)==0x3ff800000ULL);
   CHECK(!memcmp(dma_pointer(le64(meta+72),64000),GuAssets[1].firmware.data,64000));
   CHECK(!memcmp(dma_pointer(le64(meta+32),36864),GuAssets[3].firmware.data,36864));
   /* Walk published DMA addresses as firmware would; expected ELF bytes are pinned. */
@@ -321,7 +319,7 @@ static EFI_STATUS EFIAPI write_memory(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL
     if(fake.mode!=FWSEC_NO_WPR) {
       registers[0x1fa824/4]=0x27fe000;registers[0x1fa828/4]=0x27feff0;
 #ifdef GU_AD104_TRANSACTION
-      registers[0x1fa824/4]=0x2ff8000;registers[0x1fa828/4]=0x2ff8ff0;
+      registers[0x1fa824/4]=0x3ff6000;registers[0x1fa828/4]=0x3ff6ff0;
 #endif
     }
     if(fake.mode==FWSEC_ERROR_CODE)registers[0x1438/4]=0x10000;
@@ -377,7 +375,7 @@ static EFI_STATUS EFIAPI stall(UINTN microseconds) {
 }
 static BOOLEAN display_check(void) {return fake.mode!=DISPLAY_CHANGED || !Gu.started;}
 static EFI_STATUS EFIAPI location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f) {
-  CHECK(p==&pci);*s=0;*b=1;*d=0;*f=0;return EFI_SUCCESS;
+  CHECK(p==&pci);*s=0;*b=5;*d=0;*f=0;return EFI_SUCCESS;
 }
 static VOID setup(enum scenario mode) {
   memset(&fake,0,sizeof(fake));memset(buffers,0,sizeof(buffers));memset(pools,0,sizeof(pools));
@@ -390,14 +388,14 @@ static VOID setup(enum scenario mode) {
   pci.GetLocation=location;
   pci.Attributes=master_attributes;fake.pci_attributes=EFI_PCI_IO_ATTRIBUTE_IO|EFI_PCI_IO_ATTRIBUTE_MEMORY;
   memcpy(config,CapturedConfig,sizeof(config));
-  registers[0]=0x194000a1;registers[0x118128/4]=0x8b8f;registers[0x118234/4]=0x03ff;
+  registers[0]=0x193000a1;registers[0x118128/4]=0x8b8f;registers[0x118234/4]=0x03ff;
   registers[GSP/4+0x100/4]=0x10;registers[0x1fa824/4]=0x1ffffe00;
   registers[PLM/4]=0xffffff8f;registers[SS0/4]=0x46254040;registers[SS1/4]=3;
   registers[0x1183a4/4]=0x2800;registers[0x625f04/4]=1;registers[0x1fa7c8/4]=0x45cb8f;
 #ifdef GU_AD104_TRANSACTION
-  registers[SS0/4]=GU_STOCK_PROFILE_SS0;registers[SS1/4]=6;registers[0x1183a4/4]=0x2ffa;
+  registers[SS0/4]=GU_STOCK_PROFILE_SS0;registers[SS1/4]=2;registers[0x1183a4/4]=0x3ff8;
 #endif
-  registers[0x1fa82c/4]=0x100000;registers[0x1fa830/4]=0x2ef9ff0;
+  registers[0x1fa82c/4]=0x100000;registers[0x1fa830/4]=0x3cf7ff0;
   registers[0x824148/4]=1;registers[0x8241e0/4]=1;
   registers[0x1fa7cc/4]=registers[0x1fa7c4/4]=0x4cb8f;
   registers[0x9a0148/4]=0xffffff0f;
@@ -459,11 +457,11 @@ int main(int argc,char **argv) {
   }
 #ifdef GU_ENTRY_LATCHED
   for(unsigned permutation=0;permutation<3;permutation++) {
-    test_entry_ss0=permutation==2?0x23603005U:permutation==1?0x23613005U:0x23703005U;test_entry_ss1=1;
+    test_entry_ss0=permutation==2?0x76335066U:permutation==1?0x76225065U:0x76225066U;test_entry_ss1=2;
 #endif
   for(int mode=SUCCESS;mode<SCENARIO_COUNT;mode++) {
     setup((enum scenario)mode);UINT64 mask=0xffffffffffffULL;
-    struct pci_dev device={.vendor=0x10de,.device=0x2782,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},.pm_cap=0x60,.refs=1};
+    struct pci_dev device={.vendor=0x10de,.device=GU_AD103_RTX_4080,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},.pm_cap=0x60,.refs=1};
     struct gpu_unlock_610_shared shared={0};
     int result=gpu_unlock_610_load_shared(&device,&shared);CHECK(!result);
     result=gpu_unlock_610_unlock(&device,&shared);gpu_unlock_610_release_shared(&shared);
@@ -491,7 +489,7 @@ int main(int argc,char **argv) {
       if(mode==MAP_FAIL || mode==MAP_PARTIAL)CHECK(!Gu.started && !fake.pci_writes);
       if(mode==MARKER_MISSING || mode==HALT_MISSING || mode==WPR_CFG_CLOSED || mode==WPR_CLOSED || mode==FEAT_CLOSED) {
         CHECK(fake.sec2_starts==1 && !fake.flrs);
-        CHECK(registers[SS0/4]!=0x88888888 && registers[SS1/4]==1);
+        CHECK(registers[SS0/4]!=0x88888888 && registers[SS1/4]==2);
       }
       if(mode==READOUT_UNCHANGED)CHECK(!fake.flrs);
       if(mode==FWSEC_NO_WPR || mode==FWSEC_ERROR_CODE)CHECK(fake.gsp_starts==1 && !fake.sec2_starts && !fake.flrs);

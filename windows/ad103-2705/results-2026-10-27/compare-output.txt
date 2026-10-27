@@ -1,0 +1,9 @@
+before: stock-bruno-20261027-rep3 (2026-10-27T09:59:39.436445+00:00)
+after:  unlocked-bruno-20261027 (2026-10-27T10:09:29.699169+00:00)
+identity: benchmark/cuBLAS/torch/GPU/format all match
+
+mode            stock TF  unlocked TF   ratio  clock before  clock after  W before  W after exact-ok
+fp32_pedantic      37.35        37.33   1.000       2715 MHz      2715 MHz   301.8W  311.3W      yes
+fp16_fp32         101.44       188.47   1.858       2805 MHz      2625 MHz   211.8W  298.6W      yes
+bf16_fp32         101.16       192.62   1.904       2805 MHz      2670 MHz   210.1W  260.4W      yes
+e4m3_fp32         191.36       324.19   1.694       2805 MHz      2340 MHz   276.4W  284.8W      yes

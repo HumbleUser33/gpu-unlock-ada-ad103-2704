@@ -7,9 +7,9 @@
 static struct pci_dev Device;
 static UINT64 Mask;
 static VOID fresh(VOID) {
-  test_entry_ss0=0x23613005;test_entry_ss1=1;setup(SUCCESS);
+  test_entry_ss0=0x76225065;test_entry_ss1=2;setup(SUCCESS);
   Mask=0xffffffffffffULL;
-  Device=(struct pci_dev){.vendor=0x10de,.device=0x2782,
+  Device=(struct pci_dev){.vendor=0x10de,.device=0x2704,
     .dev={.dma_mask=&Mask,.coherent_dma_mask=0xfffffffffULL},.pm_cap=0x60,.refs=1};
 }
 static VOID rejected(const char *name,struct gpu_unlock_610_shared *shared) {

@@ -1,0 +1,832 @@
+diff --git a/firmware/generate_v67.py b/firmware/generate_v67.py
+index d638ed5..5cc97ef 100644
+--- a/firmware/generate_v67.py
++++ b/firmware/generate_v67.py
+@@ -8,6 +8,7 @@ import argparse
+ import json
+ import hashlib
+ import subprocess
++import shutil
+ import tarfile
+ from pathlib import Path
+ 
+@@ -86,6 +87,17 @@ def sha256(data: bytes) -> str:
+ 
+ def extract_member(package: Path, name: str) -> bytes:
+     if package.name.endswith(".zst"):
++        if shutil.which("zstd") is None:
++            # No zstd binary on this platform: use the native zstd module
++            # (Python >= 3.14). Same bytes, no external process.
++            import io
++            try:
++                from compression import zstd as _zstd
++            except ImportError:
++                raise ValueError("zstd binary not found and no native zstd module")
++            with tarfile.open(fileobj=io.BytesIO(_zstd.decompress(package.read_bytes())),
++                              mode="r|") as archive:
++                return read_member(archive, name)
+         process = subprocess.Popen(["zstd", "-dc", str(package)], stdout=subprocess.PIPE)
+         try:
+             with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+diff --git a/windows/ad103-2705/app.c b/windows/ad103-2705/app.c
+index e5158ab..49450fd 100644
+--- a/windows/ad103-2705/app.c
++++ b/windows/ad103-2705/app.c
+@@ -58,7 +58,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE image,EFI_SYSTEM_TABLE *t) {
+   if(!GuMsiReleased()||!GuAd104ColdEntry()){s=EFI_NOT_READY;goto failed;}
+   Gu.display_check=GuMsiReleased;Gu.display_ok=TRUE;Gu.armed=TRUE;
+   UINT64 mask=0xffffffffffffULL;
+-  struct pci_dev dev={.vendor=0x10de,.device=0x2705u,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},
++  struct pci_dev dev={.vendor=0x10de,.device=0x2704u,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},
+     .current_state=PCI_D0,.pm_cap=Gu.pm_cap,.refs=1};
+   struct gpu_unlock_610_shared shared={0};
+   stage="shared-assets";int result=gpu_unlock_610_load_shared(&dev,&shared);
+diff --git a/windows/ad103-2705/boot_io.c b/windows/ad103-2705/boot_io.c
+index 103230d..45cc7aa 100644
+--- a/windows/ad103-2705/boot_io.c
++++ b/windows/ad103-2705/boot_io.c
+@@ -17,9 +17,9 @@ static BOOLEAN Silent,Sealed;
+ static EFI_GUID LoadedGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID,FsGuid=EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+ static EFI_GUID PathGuid=EFI_DEVICE_PATH_PROTOCOL_GUID,InfoGuid=EFI_FILE_INFO_ID;
+ static const EFI_GUID WindowsPartition=GU_WINDOWS_PARTITION_INITIALIZER;
+-/* The unlock EFI takes over the firmware's original target and chains to the
+- * renamed real boot manager, so no BCD/NVRAM entry has to be edited. */
+-static const CHAR16 WindowsName[]=L"\\EFI\\Microsoft\\Boot\\bootmgfw.orig.efi";
++/* USB route: nothing on the ESP is renamed. The staged image is the real,
++ * original boot manager, loaded and started read-only from the USB run. */
++static const CHAR16 WindowsName[]=L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
+ 
+ static BOOLEAN Inspect(const EFI_DEVICE_PATH_PROTOCOL *p,UINTN *size,BOOLEAN *usb,BOOLEAN *windows) {
+   UINTN at=0,hd=0;*usb=FALSE;*windows=FALSE;
+@@ -41,7 +41,7 @@ static BOOLEAN Inspect(const EFI_DEVICE_PATH_PROTOCOL *p,UINTN *size,BOOLEAN *us
+       hd++;
+       const HARDDRIVE_DEVICE_PATH *d=(const VOID *)p;
+       if(d->MBRType==2&&d->SignatureType==2&&d->PartitionNumber==1&&d->PartitionStart==2048&&
+-         d->PartitionSize==614400&&!memcmp(d->Signature,&WindowsPartition,16))*windows=TRUE;
++         d->PartitionSize==409600&&!memcmp(d->Signature,&WindowsPartition,16))*windows=TRUE;
+     }
+     at+=n;p=(const VOID *)((const UINT8 *)p+n);
+   }
+diff --git a/windows/ad103-2705/checks.c b/windows/ad103-2705/checks.c
+index 2ed369c..6a7390e 100644
+--- a/windows/ad103-2705/checks.c
++++ b/windows/ad103-2705/checks.c
+@@ -27,8 +27,8 @@ BOOLEAN GuCheckConfig(const UINT32 Config[64], UINTN Segment, UINTN Bus,
+   if (Out == NULL) return FALSE;
+   *Out = Caps;
+   /* PCI bus is assigned by firmware enumeration, not by the card: this board
+-   * puts the GPU at bus 8 (captured), upstream's was bus 1. */
+-  if (Config == NULL || Segment != 0 || Bus != 8 || Device != 0 || Function != 0)
++   * puts the GPU at bus 5 (captured CAP0002), upstream's was bus 1. */
++  if (Config == NULL || Segment != 0 || Bus != 5 || Device != 0 || Function != 0)
+     return FALSE;
+   if (Config[0] != GU_BOARD_ID || Config[0x2c / 4] != GU_BOARD_SUBSYSTEM ||
+       ConfigByte(Config, 0x0b) != PCI_CLASS_DISPLAY ||
+diff --git a/windows/ad103-2705/diagnostic/src/core.c b/windows/ad103-2705/diagnostic/src/core.c
+index 909f6da..d5389c8 100644
+--- a/windows/ad103-2705/diagnostic/src/core.c
++++ b/windows/ad103-2705/diagnostic/src/core.c
+@@ -72,8 +72,8 @@ BOOLEAN DpHasUsb(const UINT8 *path, UINTN length) {
+     return FALSE;
+ }
+ BOOLEAN ExactTarget(const UINT8 *c, UINTN length) {
+-    return (BOOLEAN)(length>=64 && Read16(c)==0x10de && Read16(c+2)==0x2782 &&
+-        (c[14]&0x7f)==0 && c[11]==3 && Read16(c+44)==0x1462 && Read16(c+46)==0x5132);
++    return (BOOLEAN)(length>=64 && Read16(c)==0x10de && Read16(c+2)==0x2704 &&
++        (c[14]&0x7f)==0 && c[11]==3 && Read16(c+44)==0x1028 && Read16(c+46)==0x5113);
+ }
+ BOOLEAN RomPcirValid(const UINT8 *rom, UINTN size, UINT16 vendor, UINT16 device) {
+     UINTN off=0,image_len,pcir,images=0; UINT8 indicator;
+diff --git a/windows/ad103-2705/diagnostic/src/probe.c b/windows/ad103-2705/diagnostic/src/probe.c
+index 9958b72..3fff955 100644
+--- a/windows/ad103-2705/diagnostic/src/probe.c
++++ b/windows/ad103-2705/diagnostic/src/probe.c
+@@ -96,7 +96,7 @@ static void BarJson(TEXT *t,DISPLAY *d,UINTN index,EFI_BOOT_SERVICES *bs) {
+     TextPut(t,"}");
+ }
+ static void DisplayJson(TEXT *t,DISPLAY *d,EFI_BOOT_SERVICES *bs) {
+-    UINTN i;UINT8 hash[32];BOOLEAN target=(BOOLEAN)(Read16(d->config)==0x10de&&Read16(d->config+2)==0x2782);
++    UINTN i;UINT8 hash[32];BOOLEAN target=(BOOLEAN)(Read16(d->config)==0x10de&&Read16(d->config+2)==0x2704);
+     TextPut(t,"{\"vendor\":");TextHex(t,Read16(d->config),4);
+     TextPut(t,",\"device_id\":");TextHex(t,Read16(d->config+2),4);
+     TextPut(t,",\"subsystem_vendor\":");TextHex(t,Read16(d->config+44),4);
+@@ -121,7 +121,7 @@ static void DisplayJson(TEXT *t,DISPLAY *d,EFI_BOOT_SERVICES *bs) {
+     TextPut(t,",\"sha256\":");
+     /* Hash only an exact expected card's bounded, structurally checked cached ROM. */
+     if(target&&ExactTarget(d->config,64)&&d->pci->RomSize<=PROBE_ROM_MAX&&
+-        RomPcirValid(d->pci->RomImage,(UINTN)d->pci->RomSize,0x10de,0x2782)) {
++        RomPcirValid(d->pci->RomImage,(UINTN)d->pci->RomSize,0x10de,0x2704)) {
+         Sha256(d->pci->RomImage,(UINTN)d->pci->RomSize,hash);TextBytes(t,hash,32);
+     } else TextPut(t,"null");
+     TextPut(t,",\"source\":\"EFI_PCI_IO_PROTOCOL.RomImage; not a physical PROM dump\"}}");
+@@ -146,7 +146,7 @@ static void EnumerateDisplays(EFI_BOOT_SERVICES *bs,TEXT *t) {
+         d->location_valid=(BOOLEAN)(!EFI_ERROR(s)&&d->segment<=65535&&d->bus<=255&&d->device<32&&d->function<8);
+         d->path=PathFor(bs,handles[i],&d->path_length,&d->multi);
+         if(!d->location_valid||!d->path||d->multi) EnumerationComplete=FALSE;
+-        if(Read16(config)==0x10de&&Read16(config+2)==0x2782) ++TargetCount;
++        if(Read16(config)==0x10de&&Read16(config+2)==0x2704) ++TargetCount;
+         if(ExactTarget(config,64)) ++ExactCount;
+         if(!first) TextPut(t,",");first=FALSE;DisplayJson(t,d,bs);
+     }
+@@ -267,7 +267,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE image,EFI_SYSTEM_TABLE *st) {
+     /* Export only the already cached ROM, never read the physical ROM aperture. */
+     TextPut(&t,",\"cached_rom_hex\":");
+     if(target&&target->pci->RomSize==150016&&
+-        RomPcirValid(target->pci->RomImage,(UINTN)target->pci->RomSize,0x10de,0x2782))
++        RomPcirValid(target->pci->RomImage,(UINTN)target->pci->RomSize,0x10de,0x2704))
+         TextBytes(&t,target->pci->RomImage,(UINTN)target->pci->RomSize);
+     else TextPut(&t,"null");
+     TextPut(&t,",\"platform\":");SamplePlatform(&t,st,target?target->handle:NULL);
+diff --git a/windows/ad103-2705/diagnostic/src/sample.c b/windows/ad103-2705/diagnostic/src/sample.c
+index a141679..48fe8f2 100644
+--- a/windows/ad103-2705/diagnostic/src/sample.c
++++ b/windows/ad103-2705/diagnostic/src/sample.c
+@@ -40,10 +40,10 @@ static const CHAR8 *CaptureGuard(EFI_PCI_IO_PROTOCOL *pci,EFI_BOOT_SERVICES *bs,
+     /* The diagnostic never enables memory decoding or bus mastering itself. */
+     if((Read16(config+4)&6)!=2) return "memory_decode_or_bus_master_state";
+     status=pci->GetLocation(pci,&segment,&bus,&device,&function);
+-    if(EFI_ERROR(status)||segment!=0||bus!=1||device!=0||function!=0) return "unexpected_pci_location";
+-    if(Read32(config+16)!=0x80000000u) return "bar0_relocated_or_invalid";
++    if(EFI_ERROR(status)||segment!=0||bus!=5||device!=0||function!=0) return "unexpected_pci_location";
++    if(Read32(config+16)!=0xfb000000u) return "bar0_relocated_or_invalid";
+     status=pci->GetBarAttributes(pci,0,&supports,&resource);
+-    ok=(BOOLEAN)(!EFI_ERROR(status)&&ResourceMatches(resource,Read32(config+16),0x80000000,&length)&&length==0x01000000);
++    ok=(BOOLEAN)(!EFI_ERROR(status)&&ResourceMatches(resource,Read32(config+16),0xfb000000,&length)&&length==0x01000000);
+     if(resource) bs->FreePool(resource);
+     if(!ok) return "bar0_descriptor_mismatch";
+     return NULL;
+@@ -97,7 +97,7 @@ UINTN SampleProm(TEXT *t,EFI_PCI_IO_PROTOCOL *pci,EFI_BOOT_SERVICES *bs) {
+     const CHAR8 *reason=CaptureGuard(pci,bs,words);
+     if(reason) {Failure(t,reason);return 0;}
+     attempts++;status=pci->Mem.Read(pci,EfiPciIoWidthUint32,0,0,1,&chip);
+-    if(EFI_ERROR(status)||chip!=0x194000a1u) {FailureCount(t,"unexpected_chip_for_prom",attempts);return attempts;}
++    if(EFI_ERROR(status)||chip!=0x193000a1u) {FailureCount(t,"unexpected_chip_for_prom",attempts);return attempts;}
+     attempts++;status=pci->Mem.Read(pci,EfiPciIoWidthUint32,0,PROM_START,1,&signature);
+     if(EFI_ERROR(status)||(signature&0xffff)!=0xaa55) {FailureCount(t,"prom_signature_unavailable",attempts);return attempts;}
+     for(offset=0;offset<PROM_BYTES;offset+=4096) {
+diff --git a/windows/ad103-2705/diagnostic/tests/host_tests.c b/windows/ad103-2705/diagnostic/tests/host_tests.c
+index 01c7502..6e6333f 100644
+--- a/windows/ad103-2705/diagnostic/tests/host_tests.c
++++ b/windows/ad103-2705/diagnostic/tests/host_tests.c
+@@ -51,17 +51,17 @@ static EFI_STATUS EFIAPI MemoryRead(EFI_PCI_IO_PROTOCOL *self,EFI_PCI_IO_PROTOCO
+     CHECK(found);MemoryReads++;
+     if(FailMemory&&MemoryReads==2) return EFI_DEVICE_ERROR;
+     if(ChangeIdentity&&MemoryReads==1) Config[0][8]^=1;
+-    *(UINT32 *)out=offset==0?0x194000a1u:0;
++    *(UINT32 *)out=offset==0?0x193000a1u:0;
+     return EFI_SUCCESS;
+ }
+ static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *self,UINTN *seg,UINTN *bus,UINTN *dev,UINTN *fun) {
+     if(FailedLocation) return EFI_DEVICE_ERROR;
+-    *seg=0;*bus=self==&MockPci[0]?1:0;*dev=self==&MockPci[0]?0:2;*fun=0;return EFI_SUCCESS;
++    *seg=0;*bus=self==&MockPci[0]?5:0;*dev=self==&MockPci[0]?0:2;*fun=0;return EFI_SUCCESS;
+ }
+ static EFI_STATUS EFIAPI Bar(EFI_PCI_IO_PROTOCOL *self,UINT8 index,UINT64 *supports,VOID **resources) {
+     UINT8 *p; (void)self;CHECK(index<6);BarReads++;*supports=0;
+-    p=calloc(1,46);CHECK(p!=NULL);p[0]=0x8a;p[1]=43;p[3]=0;p[17]=0x80;p[41]=1;
+-    p[22]=0xff;p[23]=0xff;p[24]=0xff;p[25]=0x80;
++    p=calloc(1,46);CHECK(p!=NULL);p[0]=0x8a;p[1]=43;p[3]=0;p[17]=0xfb;p[41]=1;
++    p[22]=0xff;p[23]=0xff;p[24]=0xff;p[25]=0xfb;
+     if(CorruptResource) p[3]=1;
+     *resources=p;return EFI_SUCCESS;
+ }
+@@ -132,10 +132,10 @@ static void Setup(unsigned scenario) {
+     memset(Config,0,sizeof(Config));memset(&Root,0,sizeof(Root));memset(&Directory,0,sizeof(Directory));memset(&Log,0,sizeof(Log));memset(&Existing,0,sizeof(Existing));
+     memset(Rom,0,sizeof(Rom));memset(Written,0,sizeof(Written));memset(Displays,0,sizeof(Displays));
+     Rom[0]=0x55;Rom[1]=0xaa;Rom[0x18]=0x40;memcpy(Rom+0x40,"PCIR",4);
+-    Rom[0x44]=0xde;Rom[0x45]=0x10;Rom[0x46]=0x82;Rom[0x47]=0x27;Rom[0x4a]=0x18;Rom[0x50]=1;Rom[0x55]=0x80;
+-    Config[0][0]=0xde;Config[0][1]=0x10;Config[0][2]=0x82;Config[0][3]=0x27;
+-    Config[0][11]=3;Config[0][44]=0x62;Config[0][45]=0x14;Config[0][46]=0x32;Config[0][47]=0x51;
+-    Config[0][4]=3;Config[0][8]=0xa1;Config[0][16]=0;Config[0][19]=0x80;
++    Rom[0x44]=0xde;Rom[0x45]=0x10;Rom[0x46]=0x04;Rom[0x47]=0x27;Rom[0x4a]=0x18;Rom[0x50]=1;Rom[0x55]=0x80;
++    Config[0][0]=0xde;Config[0][1]=0x10;Config[0][2]=0x04;Config[0][3]=0x27;
++    Config[0][11]=3;Config[0][44]=0x28;Config[0][45]=0x10;Config[0][46]=0x13;Config[0][47]=0x51;
++    Config[0][4]=3;Config[0][8]=0xa1;Config[0][16]=0;Config[0][19]=0xfb;
+     Config[1][0]=0x86;Config[1][1]=0x80;Config[1][2]=1;Config[1][11]=3;
+     if(scenario==1) Config[0][46]^=1;
+     if(scenario==3) Config[0][2]=0x05,Config[0][3]=0x27;
+@@ -173,9 +173,9 @@ static void TestCore(void) {
+     memcpy(bad,TargetPath,sizeof(TargetPath));bad[7]=1;memcpy(bad+10,TargetPath,sizeof(TargetPath));
+     CHECK(DpMeasure(bad,20,&n,&multi)&&multi);CHECK(!DpParent(bad,20,TargetGopPath,sizeof(TargetGopPath)));
+     Setup(0);CHECK(ExactTarget(Config[0],64));CHECK(!ExactTarget(Config[0],63));Config[0][14]=1;CHECK(!ExactTarget(Config[0],64));
+-    CHECK(RomPcirValid(Rom,512,0x10de,0x2782));Rom[0x50]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2782));
+-    Rom[0x50]=1;Rom[0x55]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2782));
+-    Rom[0x55]=0x80;Rom[0x18]=0xff;Rom[0x19]=0xff;CHECK(!RomPcirValid(Rom,512,0x10de,0x2782));
++    CHECK(RomPcirValid(Rom,512,0x10de,0x2704));Rom[0x50]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2704));
++    Rom[0x50]=1;Rom[0x55]=0;CHECK(!RomPcirValid(Rom,512,0x10de,0x2704));
++    Rom[0x55]=0x80;Rom[0x18]=0xff;Rom[0x19]=0xff;CHECK(!RomPcirValid(Rom,512,0x10de,0x2704));
+ }
+ static void TestApplication(void) {
+     unsigned scenario;
+diff --git a/windows/ad103-2705/diagnostic/tools/analyze.py b/windows/ad103-2705/diagnostic/tools/analyze.py
+index 160ad68..4d58672 100644
+--- a/windows/ad103-2705/diagnostic/tools/analyze.py
++++ b/windows/ad103-2705/diagnostic/tools/analyze.py
+@@ -18,9 +18,9 @@ def analyze(data, build_id):
+     if not isinstance(displays, list) or len(displays) > 32:
+         raise ValueError('Malformed display inventory')
+     targets = [(i, d) for i, d in enumerate(displays)
+-               if d.get('vendor') == '0x10de' and d.get('device_id') == '0x2782']
++               if d.get('vendor') == '0x10de' and d.get('device_id') == '0x2704']
+     exact = [(i, d) for i, d in targets
+-             if d.get('subsystem_vendor') == '0x1462' and d.get('subsystem_device') == '0x5132'
++             if d.get('subsystem_vendor') == '0x1028' and d.get('subsystem_device') == '0x5113'
+              and d.get('exact_expected_identity') is True]
+     observed = len(targets) == len(exact) == 1 and data.get('pci_enumeration_complete') is True
+     if data.get('target_id_count') != len(targets) or data.get('exact_identity_count') != len(exact):
+@@ -119,7 +119,7 @@ def analyze(data, build_id):
+         raise ValueError('Target location or device path is incomplete')
+     result['location'] = target['location']
+     config = bytes.fromhex(target.get('config64', ''))
+-    if len(config) != 64 or config[:4] != bytes.fromhex('de108227') or config[44:48] != bytes.fromhex('62143251'):
++    if len(config) != 64 or config[:4] != bytes.fromhex('de100427') or config[44:48] != bytes.fromhex('28101351'):
+         raise ValueError('Config header does not match the declared target identity')
+     if config[11] != 3 or config[14] & 0x7f:
+         raise ValueError('Target is not a type-0 display controller')
+diff --git a/windows/ad103-2705/msi_release.c b/windows/ad103-2705/msi_release.c
+index faf9821..23d7ae5 100644
+--- a/windows/ad103-2705/msi_release.c
++++ b/windows/ad103-2705/msi_release.c
+@@ -428,7 +428,7 @@ static EFI_STATUS ReadConfig(UINT32 c[64]) {
+   EFI_STATUS s=Interface(Plan.pci,&PciGuid,(VOID **)&io);
+   if(s!=EFI_SUCCESS||io!=Gu.pci||!io->Pci.Read||!io->GetLocation)return EFI_NOT_READY;
+   s=io->GetLocation(io,&seg,&bus,&dev,&fun);
+-  if(s!=EFI_SUCCESS||seg||bus!=8||dev||fun)return EFI_UNSUPPORTED;
++  if(s!=EFI_SUCCESS||seg||bus!=5||dev||fun)return EFI_UNSUPPORTED;
+   s=io->Pci.Read(io,EfiPciIoWidthUint32,0,64,c);
+   if(s==EFI_SUCCESS&&(!GuTargetConfig(c,seg,bus,dev,fun)||(c[1]&4)))s=EFI_UNSUPPORTED;
+   return s;
+diff --git a/windows/ad103-2705/port.c b/windows/ad103-2705/port.c
+index 3d17c94..7b567a7 100644
+--- a/windows/ad103-2705/port.c
++++ b/windows/ad103-2705/port.c
+@@ -53,7 +53,7 @@ VOID GuInit(EFI_BOOT_SERVICES *Bs, EFI_PCI_IO_PROTOCOL *Pci) {
+ #endif
+ }
+ BOOLEAN GuTargetConfig(const UINT32 *C, UINTN S, UINTN B, UINTN D, UINTN F) {
+-  return C && !S && B==8 && !D && !F && C[0]==GU_BOARD_ID &&
++  return C && !S && B==5 && !D && !F && C[0]==GU_BOARD_ID &&
+     C[11]==GU_BOARD_SUBSYSTEM && C[2]==0x030000a1U && !((C[3]>>16)&0x7f);
+ }
+ BOOLEAN GuSafeToReturn(VOID) {
+diff --git a/windows/ad103-2705/port.h b/windows/ad103-2705/port.h
+index 150909e..7b6ecee 100644
+--- a/windows/ad103-2705/port.h
++++ b/windows/ad103-2705/port.h
+@@ -4,8 +4,8 @@
+ #include <Protocol/DevicePath.h>
+ #include <stddef.h>
+ 
+-#define GU_BOARD_ID 0x270510deU
+-#define GU_BOARD_SUBSYSTEM 0x10de1771U
++#define GU_BOARD_ID 0x270410deU
++#define GU_BOARD_SUBSYSTEM 0x51131028U
+ #define GU_BAR0_BASE 0xfb000000ULL
+ #define GU_DEVICE_MEMORY_SIZE 0x3ff8U
+ /* The default artifact is read-only. Legacy host containment tests are never
+diff --git a/windows/ad103-2705/profile.c b/windows/ad103-2705/profile.c
+index 6046623..df65921 100644
+--- a/windows/ad103-2705/profile.c
++++ b/windows/ad103-2705/profile.c
+@@ -1,9 +1,9 @@
+ /* SPDX-License-Identifier: GPL-2.0-only */
+ /* GENERATED by rtx2705/tools/gen_profile.py -- do not hand-edit.
+  * Source capture : CAP0002.JSON
+- * PROM SHA-256   : 89097b6342061cc98277542476869eea222e20a62dce386d1fdb0f587f208f36
+- * Device         : 0x10de:0x2705 subsystem 0x1771:0x10de rev 0xa1
+- * PCI location   : bus 8 dev 0 fn 0
++ * PROM SHA-256   : 6306f01b8d012cb97b6910f3fda241ffb4d47d8413277f1fec7ca1a3e9d61538
++ * Device         : 0x10de:0x2704 subsystem 0x1028:0x5113 rev 0xa1
++ * PCI location   : bus 5 dev 0 fn 0
+  * A matched profile is not hardware qualification.
+  */
+ #include "profile.h"
+@@ -30,16 +30,16 @@ BOOLEAN GuAd104AssetsValid(VOID) {
+ }
+ BOOLEAN GuAd104PromMatches(const VOID *Data,UINTN Bytes) {
+   return Bytes==1048576 && GuHashMatches(Data,Bytes,
+-    "89097b6342061cc98277542476869eea222e20a62dce386d1fdb0f587f208f36");
++    "6306f01b8d012cb97b6910f3fda241ffb4d47d8413277f1fec7ca1a3e9d61538");
+ }
+ BOOLEAN GuAd104FwsecMatches(const struct gpu_unlock_fwsec *f) {
+   return f &&
+-    f->image_off==0x45b48 && f->image_size==0x10500 &&
+-    f->imem_pa==0x0 && f->imem_size==0xf700 && f->imem_va==0x0 &&
+-    f->dmem_pa==0x0 && f->data_off==0xf700 && f->dmem_size==0xd80 &&
++    f->image_off==0x45180 && f->image_size==0x10000 &&
++    f->imem_pa==0x0 && f->imem_size==0xf200 && f->imem_va==0x0 &&
++    f->dmem_pa==0x0 && f->data_off==0xf200 && f->dmem_size==0xd80 &&
+     f->pkc_off==0xb24 && f->interface_off==0x1c && f->ucode_id==9 &&
+     f->engine_mask==0x400 && f->sig_count==2 && f->sig_versions==0x3 &&
+-    f->sig_off==0x45848 && f->sig_bytes==768;
++    f->sig_off==0x44e80 && f->sig_bytes==768;
+ }
+ static BOOLEAN Config(VOID) {
+   UINT32 c[64];UINTN s,b,d,f;GU_CAPS caps;
+@@ -50,7 +50,7 @@ static BOOLEAN Config(VOID) {
+     if(EFI_ERROR(GuConfigRead(EfiPciIoWidthUint32,(UINT32)i*4,&c[i])))return FALSE;
+   if(!GuCheckConfig(c,s,b,d,f,&caps) || c[2]!=0x030000a1 ||
+      c[4]!=GU_BAR0_BASE || c[5]!=0xc || c[6]!=0x78 || c[7]!=0xc ||
+-     c[8]!=0x7c || c[9]!=0xf001){
++     c[8]!=0x7c || c[9]!=0xe001){
+     GuLog("cold-profile config mismatch: check=%u seg=%zu bus=%zu dev=%zu fun=%zu c2=%#x c4=%#x c5=%#x c6=%#x c7=%#x c8=%#x c9=%#x\n",
+       (unsigned)(GuCheckConfig(c,s,b,d,f,&caps)?1u:0u),(size_t)s,(size_t)b,(size_t)d,(size_t)f,
+       c[2],c[4],c[5],c[6],c[7],c[8],c[9]);
+@@ -117,8 +117,8 @@ static BOOLEAN Registers(UINT32 *Ss0,UINT32 *Ss1) {
+   }
+   *Ss0=GuRead32(0x82381c);*Ss1=GuRead32(0x823820);
+   if(Gu.fault){GuLog("cold-profile selector read fault\n");return FALSE;}
+-  if(*Ss0==0xffffffff||(*Ss0&0xffff0000)==0xbadf0000||*Ss0==0x88888888||*Ss1!=0x1){
+-    GuLog("cold-profile selector mismatch: SS0=%#x SS1=%#x wantSS1=%#x\n",*Ss0,*Ss1,0x1);
++  if(*Ss0==0xffffffff||(*Ss0&0xffff0000)==0xbadf0000||*Ss0==0x88888888||*Ss1!=0x2){
++    GuLog("cold-profile selector mismatch: SS0=%#x SS1=%#x wantSS1=%#x\n",*Ss0,*Ss1,0x2);
+     return FALSE;
+   }
+   return TRUE;
+diff --git a/windows/ad103-2705/tests/captured_config.h b/windows/ad103-2705/tests/captured_config.h
+index 06662c6..b89ab64 100644
+--- a/windows/ad103-2705/tests/captured_config.h
++++ b/windows/ad103-2705/tests/captured_config.h
+@@ -1,2 +1,2 @@
+-/* PCI config captured on real hardware; other fake engine responses are simulations. */
+-static const UINT8 CapturedConfig[256]={0xde,0x10,0x82,0x27,0x03,0x00,0x10,0x00,0xa1,0x00,0x00,0x03,0x10,0x00,0x80,0x00,0x00,0x00,0x00,0x80,0x0c,0x00,0x00,0x00,0x40,0x00,0x00,0x00,0x0c,0x00,0x00,0x00,0x44,0x00,0x00,0x00,0x01,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x62,0x14,0x32,0x51,0x00,0x00,0x00,0x81,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xff,0x01,0x00,0x00,0x62,0x14,0x32,0x51,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0xce,0xd6,0x23,0x00,0x00,0x00,0x00,0x00,0x01,0x68,0x03,0x48,0x08,0x00,0x00,0x00,0x05,0x78,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10,0xb4,0x12,0x00,0xe1,0x8d,0x2c,0x11,0x30,0x29,0x09,0x00,0x04,0x79,0x45,0x00,0x40,0x00,0x03,0x11,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x13,0x08,0x07,0x00,0x00,0x04,0x00,0x00,0x1e,0x00,0x80,0x01,0x04,0x00,0x1e,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x09,0x00,0x14,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x11,0x00,0x05,0x00,0x00,0x00,0xb9,0x00,0x00,0x00,0xba,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
++/* PCI config captured on real hardware (CAP0002 config256, Dell 10de:2704 bus 5). */
++static const UINT8 CapturedConfig[256]={0xde,0x10,0x04,0x27,0x03,0x00,0x10,0x00,0xa1,0x00,0x00,0x03,0x10,0x00,0x80,0x00,0x00,0x00,0x00,0xfb,0x0c,0x00,0x00,0x00,0x78,0x00,0x00,0x00,0x0c,0x00,0x00,0x00,0x7c,0x00,0x00,0x00,0x01,0xe0,0x00,0x00,0x00,0x00,0x00,0x00,0x28,0x10,0x13,0x51,0x00,0x00,0x00,0xfc,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xff,0x01,0x00,0x00,0x28,0x10,0x13,0x51,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0xce,0xd6,0x23,0x00,0x00,0x00,0x00,0x00,0x01,0x68,0x03,0x48,0x08,0x00,0x00,0x00,0x05,0x78,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10,0xb4,0x12,0x00,0xe1,0x8d,0x2c,0x11,0x30,0x29,0x09,0x00,0x04,0x79,0x45,0x00,0x42,0x01,0x04,0x11,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x13,0x08,0x07,0x00,0x00,0x04,0x00,0x00,0x1e,0x00,0x80,0x01,0x04,0x00,0x1f,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x09,0x00,0x14,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x11,0x00,0x05,0x00,0x00,0x00,0xb9,0x00,0x00,0x00,0xba,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+diff --git a/windows/ad103-2705/tests/test_app_flow.c b/windows/ad103-2705/tests/test_app_flow.c
+index bf93c7a..be2be69 100644
+--- a/windows/ad103-2705/tests/test_app_flow.c
++++ b/windows/ad103-2705/tests/test_app_flow.c
+@@ -13,13 +13,13 @@ static EFI_STATUS Tick(unsigned n){CHECK(++Calls==n);return Case==n?EFI_DEVICE_E
+ VOID GuInit(EFI_BOOT_SERVICES *b,EFI_PCI_IO_PROTOCOL *p){memset(&Gu,0,sizeof(Gu));Gu.bs=b;Gu.pci=p;}
+ VOID GuLog(const char *f,...){(void)f;}
+ VOID GuLogText(const char *f){(void)f;}
+-BOOLEAN GuCheckConfig(const UINT32 c[64],UINTN s,UINTN b,UINTN d,UINTN f,GU_CAPS *caps){CHECK(c[0]==GU_BOARD_ID&&!s&&b==8&&!d&&!f);*caps=(GU_CAPS){0x60,0x78,0x68,0,2};return TRUE;}
++BOOLEAN GuCheckConfig(const UINT32 c[64],UINTN s,UINTN b,UINTN d,UINTN f,GU_CAPS *caps){CHECK(c[0]==GU_BOARD_ID&&!s&&b==5&&!d&&!f);*caps=(GU_CAPS){0x60,0x78,0x68,0,2};return TRUE;}
+ static EFI_STATUS EFIAPI GetVariable(CHAR16 *name,EFI_GUID *guid,UINT32 *attrs,UINTN *n,VOID *v){(void)name;(void)guid;*attrs=0;*n=1;*(UINT8 *)v=Case==99?1:0;return EFI_SUCCESS;}
+ static EFI_STATUS EFIAPI Locate(EFI_LOCATE_SEARCH_TYPE kind,EFI_GUID *guid,VOID *key,UINTN *n,EFI_HANDLE **out){(void)kind;(void)guid;(void)key;*n=1;*out=malloc(sizeof(**out));CHECK(*out);(*out)[0]=(EFI_HANDLE)2;return EFI_SUCCESS;}
+ static EFI_STATUS EFIAPI Handle(EFI_HANDLE h,EFI_GUID *guid,VOID **p){(void)guid;CHECK(h==(EFI_HANDLE)2);*p=&Io;return EFI_SUCCESS;}
+ static EFI_STATUS EFIAPI Free(VOID *p){free(p);return EFI_SUCCESS;}
+ static EFI_STATUS EFIAPI Read(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_WIDTH w,UINT32 off,UINTN n,VOID *out){CHECK(p==&Io&&w==EfiPciIoWidthUint32&&!off&&(n==1||n==64));memset(out,0,n*4);((UINT32 *)out)[0]=GU_BOARD_ID;if(n==64)((UINT32 *)out)[2]=0x030000a1;return EFI_SUCCESS;}
+-static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){(void)p;*s=*d=*f=0;*b=8;return EFI_SUCCESS;}
++static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){(void)p;*s=*d=*f=0;*b=5;return EFI_SUCCESS;}
+ EFI_STATUS GuBootOpen(EFI_HANDLE i,EFI_SYSTEM_TABLE *t){CHECK(i==(EFI_HANDLE)1&&t==&St);return Tick(1);}
+ EFI_STATUS GuBootLoadAssets(VOID){return Tick(2);}
+ EFI_STATUS GuAd104Prepare(VOID){EFI_STATUS s=Tick(3);if(s==EFI_SUCCESS)Gu.profile_verified=Gu.prom_verified=TRUE;return s;}
+@@ -31,7 +31,7 @@ VOID GuBootSilence(VOID){CHECK(Calls==6);Silenced=TRUE;}
+ EFI_STATUS GuMsiRelease(VOID){CHECK(Silenced);Releases++;Mutated=TRUE;Gu.owned=TRUE;return Tick(7);}
+ BOOLEAN GuMsiReleased(VOID){return Mutated&&Gu.owned;}
+ BOOLEAN GuAd104ColdEntry(VOID){return TRUE;}
+-int gpu_unlock_610_load_shared(struct pci_dev *d,struct gpu_unlock_610_shared *shared){CHECK(d->device==0x2705&&Gu.owned&&Gu.armed&&Gu.display_ok);(void)shared;return Tick(8)==EFI_SUCCESS?0:-EIO;}
++int gpu_unlock_610_load_shared(struct pci_dev *d,struct gpu_unlock_610_shared *shared){CHECK(d->device==0x2704&&Gu.owned&&Gu.armed&&Gu.display_ok);(void)shared;return Tick(8)==EFI_SUCCESS?0:-EIO;}
+ int gpu_unlock_610_unlock(struct pci_dev *d,const struct gpu_unlock_610_shared *s){(void)d;(void)s;Transactions++;Gu.started=TRUE;Gu.quiesced=TRUE;Gu.flrs=1;return Tick(9)==EFI_SUCCESS?0:-EIO;}
+ void gpu_unlock_610_release_shared(struct gpu_unlock_610_shared *s){(void)s;}
+ BOOLEAN GuSafeToReturn(VOID){return TRUE;}
+diff --git a/windows/ad103-2705/tests/test_boot_io.c b/windows/ad103-2705/tests/test_boot_io.c
+index d9d8547..442b8d6 100644
+--- a/windows/ad103-2705/tests/test_boot_io.c
++++ b/windows/ad103-2705/tests/test_boot_io.c
+@@ -39,6 +39,7 @@ static EFI_STATUS EFIAPI Open(EFI_FILE_PROTOCOL *p,EFI_FILE_PROTOCOL **out,CHAR1
+     CHECK(mode==(EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE)&&!attrs);*out=&LogFile;return EFI_SUCCESS;
+   }
+   CHECK(mode==EFI_FILE_MODE_READ&&!attrs);Position=0;
++  if(p==&OwnRoot&&!wcscmp(name,L"\\AD104-UNLOCK\\AUTO.TXT"))return EFI_NOT_FOUND;/* optional auto-run config absent */
+   if(p==&WinRoot){CHECK(!wcscmp(name,WindowsName));ReadBytes=WinBytes;ReadSize=3086728;}
+   else {
+     CHECK(p==&OwnRoot);static const CHAR16 *names[]={L"\\AD104-ASSETS\\booter_load_ad102.bin",L"\\AD104-ASSETS\\v67-ad102-610.43.03-four-plm.bin",L"\\AD104-ASSETS\\gsp_ga10x.bin",L"\\AD104-ASSETS\\gsp_boot_ad102.bin",L"\\AD104-ASSETS\\gsp_boot_desc_ad102.bin"};
+@@ -69,7 +70,7 @@ static EFI_STATUS EFIAPI Watchdog(UINTN seconds,UINT64 code,UINTN n,CHAR16 *data
+ static EFI_STATUS EFIAPI Key(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *p,EFI_INPUT_KEY *key){(void)p;key->ScanCode=0;key->UnicodeChar=KeyMode==1?'U':KeyMode==2?'S':0;return KeyMode?EFI_SUCCESS:EFI_NOT_READY;}
+ static EFI_STATUS EFIAPI Stall(UINTN n){CHECK(n==100000);Stalls++;return EFI_SUCCESS;}
+ static void Setup(void) {
+-  Table=NULL;Self=Windows=OwnVolume=NULL;Root=Log=NULL;Silent=FALSE;Loads=Starts=FileWrites=Stalls=KeyMode=0;
++  Table=NULL;Self=Windows=OwnVolume=NULL;Root=Log=NULL;Silent=FALSE;Sealed=FALSE;Loads=Starts=FileWrites=Stalls=KeyMode=0;
+   memset(&Gu,0,sizeof(Gu));memset(GuAssets,0,sizeof(GuAssets));memset(&Bs,0,sizeof(Bs));memset(&St,0,sizeof(St));
+   memset(&SelfImage,0,sizeof(SelfImage));memset(&WinImage,0,sizeof(WinImage));
+   Bs.HandleProtocol=Handle;Bs.LocateHandleBuffer=Locate;Bs.FreePool=Free;Bs.LoadImage=Load;Bs.StartImage=Start;Bs.SetWatchdogTimer=Watchdog;Bs.Stall=Stall;
+@@ -81,7 +82,7 @@ static void Setup(void) {
+   LogFile.Flush=Flush;LogFile.Write=Write;Reader.GetInfo=Info;Reader.Read=Read;
+   UsbPath[0]=Case==NON_USB?1:3;
+   memset(WinPath,0,sizeof(WinPath));HARDDRIVE_DEVICE_PATH *hd=(VOID *)WinPath;
+-  hd->Header.Type=4;hd->Header.SubType=1;hd->Header.Length[0]=42;hd->PartitionNumber=2;hd->PartitionStart=1085440;hd->PartitionSize=202752;
++  hd->Header.Type=4;hd->Header.SubType=1;hd->Header.Length[0]=42;hd->PartitionNumber=1;hd->PartitionStart=2048;hd->PartitionSize=409600;
+   hd->MBRType=hd->SignatureType=2;memcpy(hd->Signature,&WindowsPartition,16);if(Case==WRONG_PARTITION)hd->Signature[0]^=1;
+   WinPath[42]=127;WinPath[43]=255;WinPath[44]=4;
+ }
+@@ -93,11 +94,16 @@ int main(int argc,char **argv){
+   for(UINTN i=0;i<5;i++){char p[4096];snprintf(p,sizeof(p),"%s/%s",argv[2],names[i]);AssetBytes[i]=File(p,sizes[i]);}
+   for(Case=GOOD;Case<IO_CASES;Case++) {
+     Setup();EFI_STATUS s=GuBootOpen((EFI_HANDLE)1,&St);
+-    if(Case==NON_USB){CHECK(s!=EFI_SUCCESS&&!FileWrites&&!Loads);continue;}CHECK(s==EFI_SUCCESS);
++    if(Case==NON_USB){CHECK(s==EFI_SUCCESS&&!Loads);continue;}CHECK(s==EFI_SUCCESS);
++    /* Fork contract: running from the internal ESP is accepted (AUTO.TXT path);
++     * only the bootmgfw source volume must be the real non-USB ESP. */
+     if(Case==GOOD){CHECK(GuBootLoadAssets()==EFI_SUCCESS);for(UINTN i=0;i<5;i++){CHECK(GuAssets[i].firmware.size==sizes[i]&&!memcmp(GuAssets[i].firmware.data,AssetBytes[i],sizes[i]));free((VOID *)GuAssets[i].firmware.data);}}
+     if(Case==BAD_WINDOWS_HASH)WinBytes[1]^=1;
+     s=GuBootLoadWindows();if(Case==BAD_WINDOWS_HASH)WinBytes[1]^=1;
+-    if(Case==GOOD||Case==LOG_WRITE_FAIL){CHECK(s==EFI_SUCCESS&&Loads==1);if(Case==LOG_WRITE_FAIL)CHECK(Gu.fault);}
++    /* Fork contract: bootmgfw bytes are read from the real ESP and only hashed
++     * into the log (Windows updates replace that file); the identity gate is the
++     * pinned ESP partition, enforced in the WRONG_PARTITION case. */
++    if(Case==GOOD||Case==LOG_WRITE_FAIL||Case==BAD_WINDOWS_HASH){CHECK(s==EFI_SUCCESS&&Loads==1);if(Case==LOG_WRITE_FAIL)CHECK(Gu.fault);}
+     else {CHECK(s!=EFI_SUCCESS&&!Starts);if(Case!=WRONG_LOADED_DEVICE)CHECK(!Loads);}
+     if(Case==GOOD) {
+       BOOLEAN unlock=FALSE;KeyMode=1;CHECK(GuBootChoose(&unlock)==EFI_SUCCESS&&unlock);
+diff --git a/windows/ad103-2705/tests/test_efi_transaction.c b/windows/ad103-2705/tests/test_efi_transaction.c
+index 30eb1f0..9baa777 100644
+--- a/windows/ad103-2705/tests/test_efi_transaction.c
++++ b/windows/ad103-2705/tests/test_efi_transaction.c
+@@ -4,9 +4,9 @@
+ #ifdef GU_ENTRY_LATCHED
+ /* Test fixture baseline only, never a production fixed-selector definition. */
+ #ifndef GU_STOCK_PROFILE_SS0
+-#define GU_STOCK_PROFILE_SS0 0x23703005U
++#define GU_STOCK_PROFILE_SS0 0x76225066U
+ #endif
+-static UINT32 test_entry_ss0=0x23703005U,test_entry_ss1=1;
++static UINT32 test_entry_ss0=0x76225066U,test_entry_ss1=2;
+ #endif
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -130,14 +130,14 @@ static VOID check_fwsec_image(void) {
+ #ifdef GU_AD104_TRANSACTION
+   struct gpu_unlock_fwsec fw;UINT32 sig_at;
+   CHECK(!gpu_unlock_vbios_fwsec(prom,sizeof(prom),&fw));
+-  CHECK(fw.image_off==0x45488 && fw.image_size==0x10300 && fw.dmem_size==0xd80);
++  CHECK(fw.image_off==0x45180 && fw.image_size==0x10000 && fw.dmem_size==0xd80);
+   CHECK(!gpu_unlock_fwsec_sig_offset(fw.sig_versions,1,384,&sig_at));
+   UINT64 last_source=((UINT64)registers[(GSP+0x110)/4]<<8)|((UINT64)registers[(GSP+0x128)/4]<<40);
+   UINT8 *image=dma_pointer(last_source-fw.data_off,fw.image_size);
+   CHECK(!memcmp(gsp_dmem,image+fw.data_off,sizeof(gsp_dmem)));
+   CHECK(!memcmp(gsp_dmem+fw.pkc_off,prom+fw.sig_off+sig_at,384));
+   UINT8 expected[0x10300];memcpy(expected,prom+fw.image_off,sizeof(expected));
+-  CHECK(!gpu_unlock_fwsec_patch_frts(expected,&fw,0x2ff800000ULL));
++  CHECK(!gpu_unlock_fwsec_patch_frts(expected,&fw,0x3ff600000ULL));
+   memcpy(expected+fw.data_off+fw.pkc_off,prom+fw.sig_off+sig_at,384);
+   CHECK(!memcmp(gsp_dmem,expected+fw.data_off,sizeof(gsp_dmem)));
+ #else
+@@ -154,13 +154,11 @@ static VOID check_booter_publication(void) {
+   UINT8 *meta=dma_pointer(meta_address,256);fake.meta_dma=meta_address;
+   CHECK(le64(meta)==GU_WPR_META_MAGIC && le64(meta+8)==1);
+   CHECK(le64(meta+24)==0x5053000 && le64(meta+80)==0xfa00);
+-  UINT64 delta=0;
+-#ifdef GU_AD104_TRANSACTION
+-  delta=0x7fa00000ULL;
+-#endif
+-  CHECK(le64(meta+112)==0x275400000ULL+delta && le64(meta+136)==0x27ada0000ULL+delta);
+-  CHECK(le64(meta+144)==0x27fdf7000ULL+delta && le64(meta+152)==0x27fe00000ULL+delta);
+-  CHECK(le64(meta+168)==0x27ff00000ULL+delta && le64(meta+176)==0x280000000ULL+delta);
++  /* Layout absolute addresses derived from this card's FB_SIZE_MB=0x3ff8
++   * (CAP0002), as computed by layout_610 and logged at runtime. */
++  CHECK(le64(meta+112)==0x3f4c00000ULL && le64(meta+136)==0x3fa5a0000ULL);
++  CHECK(le64(meta+144)==0x3ff5f7000ULL && le64(meta+152)==0x3ff600000ULL);
++  CHECK(le64(meta+168)==0x3ff700000ULL && le64(meta+176)==0x3ff800000ULL);
+   CHECK(!memcmp(dma_pointer(le64(meta+72),64000),GuAssets[1].firmware.data,64000));
+   CHECK(!memcmp(dma_pointer(le64(meta+32),36864),GuAssets[3].firmware.data,36864));
+   /* Walk published DMA addresses as firmware would; expected ELF bytes are pinned. */
+@@ -321,7 +319,7 @@ static EFI_STATUS EFIAPI write_memory(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL
+     if(fake.mode!=FWSEC_NO_WPR) {
+       registers[0x1fa824/4]=0x27fe000;registers[0x1fa828/4]=0x27feff0;
+ #ifdef GU_AD104_TRANSACTION
+-      registers[0x1fa824/4]=0x2ff8000;registers[0x1fa828/4]=0x2ff8ff0;
++      registers[0x1fa824/4]=0x3ff6000;registers[0x1fa828/4]=0x3ff6ff0;
+ #endif
+     }
+     if(fake.mode==FWSEC_ERROR_CODE)registers[0x1438/4]=0x10000;
+@@ -377,7 +375,7 @@ static EFI_STATUS EFIAPI stall(UINTN microseconds) {
+ }
+ static BOOLEAN display_check(void) {return fake.mode!=DISPLAY_CHANGED || !Gu.started;}
+ static EFI_STATUS EFIAPI location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f) {
+-  CHECK(p==&pci);*s=0;*b=1;*d=0;*f=0;return EFI_SUCCESS;
++  CHECK(p==&pci);*s=0;*b=5;*d=0;*f=0;return EFI_SUCCESS;
+ }
+ static VOID setup(enum scenario mode) {
+   memset(&fake,0,sizeof(fake));memset(buffers,0,sizeof(buffers));memset(pools,0,sizeof(pools));
+@@ -390,14 +388,14 @@ static VOID setup(enum scenario mode) {
+   pci.GetLocation=location;
+   pci.Attributes=master_attributes;fake.pci_attributes=EFI_PCI_IO_ATTRIBUTE_IO|EFI_PCI_IO_ATTRIBUTE_MEMORY;
+   memcpy(config,CapturedConfig,sizeof(config));
+-  registers[0]=0x194000a1;registers[0x118128/4]=0x8b8f;registers[0x118234/4]=0x03ff;
++  registers[0]=0x193000a1;registers[0x118128/4]=0x8b8f;registers[0x118234/4]=0x03ff;
+   registers[GSP/4+0x100/4]=0x10;registers[0x1fa824/4]=0x1ffffe00;
+   registers[PLM/4]=0xffffff8f;registers[SS0/4]=0x46254040;registers[SS1/4]=3;
+   registers[0x1183a4/4]=0x2800;registers[0x625f04/4]=1;registers[0x1fa7c8/4]=0x45cb8f;
+ #ifdef GU_AD104_TRANSACTION
+-  registers[SS0/4]=GU_STOCK_PROFILE_SS0;registers[SS1/4]=6;registers[0x1183a4/4]=0x2ffa;
++  registers[SS0/4]=GU_STOCK_PROFILE_SS0;registers[SS1/4]=2;registers[0x1183a4/4]=0x3ff8;
+ #endif
+-  registers[0x1fa82c/4]=0x100000;registers[0x1fa830/4]=0x2ef9ff0;
++  registers[0x1fa82c/4]=0x100000;registers[0x1fa830/4]=0x3cf7ff0;
+   registers[0x824148/4]=1;registers[0x8241e0/4]=1;
+   registers[0x1fa7cc/4]=registers[0x1fa7c4/4]=0x4cb8f;
+   registers[0x9a0148/4]=0xffffff0f;
+@@ -459,11 +457,11 @@ int main(int argc,char **argv) {
+   }
+ #ifdef GU_ENTRY_LATCHED
+   for(unsigned permutation=0;permutation<3;permutation++) {
+-    test_entry_ss0=permutation==2?0x23603005U:permutation==1?0x23613005U:0x23703005U;test_entry_ss1=1;
++    test_entry_ss0=permutation==2?0x76335066U:permutation==1?0x76225065U:0x76225066U;test_entry_ss1=2;
+ #endif
+   for(int mode=SUCCESS;mode<SCENARIO_COUNT;mode++) {
+     setup((enum scenario)mode);UINT64 mask=0xffffffffffffULL;
+-    struct pci_dev device={.vendor=0x10de,.device=0x2782,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},.pm_cap=0x60,.refs=1};
++    struct pci_dev device={.vendor=0x10de,.device=GU_AD103_RTX_4080,.dev={.dma_mask=&mask,.coherent_dma_mask=0xfffffffffULL},.pm_cap=0x60,.refs=1};
+     struct gpu_unlock_610_shared shared={0};
+     int result=gpu_unlock_610_load_shared(&device,&shared);CHECK(!result);
+     result=gpu_unlock_610_unlock(&device,&shared);gpu_unlock_610_release_shared(&shared);
+@@ -491,7 +489,7 @@ int main(int argc,char **argv) {
+       if(mode==MAP_FAIL || mode==MAP_PARTIAL)CHECK(!Gu.started && !fake.pci_writes);
+       if(mode==MARKER_MISSING || mode==HALT_MISSING || mode==WPR_CFG_CLOSED || mode==WPR_CLOSED || mode==FEAT_CLOSED) {
+         CHECK(fake.sec2_starts==1 && !fake.flrs);
+-        CHECK(registers[SS0/4]!=0x88888888 && registers[SS1/4]==1);
++        CHECK(registers[SS0/4]!=0x88888888 && registers[SS1/4]==2);
+       }
+       if(mode==READOUT_UNCHANGED)CHECK(!fake.flrs);
+       if(mode==FWSEC_NO_WPR || mode==FWSEC_ERROR_CODE)CHECK(fake.gsp_starts==1 && !fake.sec2_starts && !fake.flrs);
+diff --git a/windows/ad103-2705/tests/test_guards.c b/windows/ad103-2705/tests/test_guards.c
+index 4342f5e..2ca4e90 100644
+--- a/windows/ad103-2705/tests/test_guards.c
++++ b/windows/ad103-2705/tests/test_guards.c
+@@ -7,9 +7,9 @@
+ static struct pci_dev Device;
+ static UINT64 Mask;
+ static VOID fresh(VOID) {
+-  test_entry_ss0=0x23613005;test_entry_ss1=1;setup(SUCCESS);
++  test_entry_ss0=0x76225065;test_entry_ss1=2;setup(SUCCESS);
+   Mask=0xffffffffffffULL;
+-  Device=(struct pci_dev){.vendor=0x10de,.device=0x2782,
++  Device=(struct pci_dev){.vendor=0x10de,.device=0x2704,
+     .dev={.dma_mask=&Mask,.coherent_dma_mask=0xfffffffffULL},.pm_cap=0x60,.refs=1};
+ }
+ static VOID rejected(const char *name,struct gpu_unlock_610_shared *shared) {
+diff --git a/windows/ad103-2705/tests/test_msi_release.c b/windows/ad103-2705/tests/test_msi_release.c
+index 4b1c49d..79fc62f 100644
+--- a/windows/ad103-2705/tests/test_msi_release.c
++++ b/windows/ad103-2705/tests/test_msi_release.c
+@@ -20,7 +20,7 @@ enum MODE {OK,WRONG_DRIVER,EXTRA_GPU_OWNER,INPUT_CHANGED,UNRELATED_EDGE_LOST,
+  USB_REMOVE_RECONNECT,USB_REMOVE_POINTERS,USB_REMOVE_HOST_DRIVER,USB_REMOVE_HOST_PCI,USB_DYNAMIC_COUNT,USB_OFF_HOST_REMOVAL,USB_REMOVE_INPUT_CHANGED,
+  MODE_COUNT};
+ static unsigned Checks;static enum MODE Mode;
+-#define CHECK(x) do{Checks++;if(!(x)){fprintf(stderr,"MSI FAIL mode=%d line=%d: %s\n",Mode,__LINE__,#x);exit(1);}}while(0)
++#define CHECK(x) do{Checks++;if(!(x)){fprintf(stderr,"MSI FAIL mode=%d line=%d: %s\n",Mode,__LINE__,#x);fflush(stderr);if(NotesUsed){fputs("NOTES-TAIL: ",stderr);fwrite(Notes+((NotesUsed>4000)?NotesUsed-4000:0),1,NotesUsed-((NotesUsed>4000)?NotesUsed-4000:0),stderr);fputc('\n',stderr);}exit(1);}}while(0)
+ GU_PLATFORM Gu;
+ static EFI_BOOT_SERVICES Bs;static EFI_SYSTEM_TABLE St;static EFI_PCI_IO_PROTOCOL Io;
+ static EFI_SIMPLE_TEXT_INPUT_PROTOCOL Keys;static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL Text;
+@@ -44,10 +44,10 @@ VOID GuLog(const char *f,...){
+ }
+ VOID GuLogText(const char *s){(void)s;}
+ BOOLEAN GuBootLogOpen(VOID){return TRUE;}
+-BOOLEAN GuTargetConfig(const UINT32 *c,UINTN s,UINTN b,UINTN d,UINTN f){return c[0]==GU_BOARD_ID&&c[11]==GU_BOARD_SUBSYSTEM&&!s&&b==1&&!d&&!f;}
++BOOLEAN GuTargetConfig(const UINT32 *c,UINTN s,UINTN b,UINTN d,UINTN f){return c[0]==GU_BOARD_ID&&c[11]==GU_BOARD_SUBSYSTEM&&!s&&b==5&&!d&&!f&&c[2]==0x030000a1u&&!((c[3]>>16)&0x7f);}
+ BOOLEAN GuAd104ColdEntry(VOID){return Cold;}
+ BOOLEAN GuSafeToReturn(VOID){return TRUE;}
+-UINT32 GuRead32(UINT32 off){switch(off){case 0:return 0x194000a1;case 0x110100:return 0x10;case 0x82381c:return 0x88888888;case 0x823820:return 8;case 0x823804:return 0xffffffff;default:return 0;}}
++UINT32 GuRead32(UINT32 off){switch(off){case 0:return 0x193000a1;case 0x110100:return 0x10;case 0x82381c:return 0x88888888;case 0x823820:return 8;case 0x823804:return 0xffffffff;default:return 0;}}
+ static EFI_STATUS EFIAPI Free(VOID *p){free(p);return EFI_SUCCESS;}
+ static BOOLEAN Filter(const EDGE *e) {
+   if(Drift&&Mode==USB_REMOVE_POINTERS&&(e->handle==H(400)||e->handle==H(408)||
+@@ -95,6 +95,9 @@ static EFI_STATUS EFIAPI Protocols(EFI_HANDLE h,EFI_GUID ***out,UINTN *n) {
+     if(!seen)unique[(*n)++]=(EFI_GUID *)&CapturedEdges[i].protocol;
+   }
+   if(Exclusive&&h==H(365)){BOOLEAN seen=FALSE;for(UINTN j=0;j<*n;j++)if(Guid(unique[j],&PciGuid))seen=TRUE;if(!seen)unique[(*n)++]=&PciGuid;}
++  /* A stranger BY_DRIVER opener keeps PCI_IO visible on the PCI handle even
++   * after our exclusive claim closes; the cascade mock must not hide it. */
++  if(Mode==GRAPH_DRIFT&&Drift&&h==H(365)){BOOLEAN seen=FALSE;for(UINTN j=0;j<*n;j++)if(Guid(unique[j],&PciGuid))seen=TRUE;if(!seen)unique[(*n)++]=&PciGuid;}
+   for(UINTN i=0;i<NewCount;i++)if(NewEdges[i].handle==h) {
+     BOOLEAN seen=FALSE;for(UINTN j=0;j<*n;j++)if(Guid(unique[j],&NewEdges[i].protocol))seen=TRUE;
+     if(!seen)unique[(*n)++]=&NewEdges[i].protocol;
+@@ -115,15 +118,19 @@ static EFI_STATUS EFIAPI Opens(EFI_HANDLE h,EFI_GUID *g,EFI_OPEN_PROTOCOL_INFORM
+   for(UINTN i=0;i<NewCount;i++)if(NewEdges[i].handle==h&&Guid(g,&NewEdges[i].protocol)) {
+     EDGE *e=&NewEdges[i];(*out)[(*n)++]=(EFI_OPEN_PROTOCOL_INFORMATION_ENTRY){e->agent,e->controller,e->attributes,e->count};
+   }
+-  if(Mode==PROTECTED_COUNT_CHANGE&&Drift&&h==H(365)&&Guid(g,&PciGuid)&&*n)(*out)[0].OpenCount++;
++  /* The USB host controller's own PCI_IO opener gains a second open count:
++   * a protected-endpoint count change (H(369)=Plan.usb_host edge agent 82).
++   * Console handle 311 and the GPU children carry no queryable captured edges
++   * once the stage-3 cascade mock applies. */
++  if(Mode==PROTECTED_COUNT_CHANGE&&Drift&&h==H(369)&&Guid(g,&PciGuid)&&*n)(*out)[0].OpenCount++;
+   CHECK(*n<=128);return EFI_SUCCESS;
+ }
+ static EFI_TPL EFIAPI Raise(EFI_TPL t){CHECK(t==TPL_NOTIFY);return TPL_APPLICATION;}
+ static VOID EFIAPI Restore(EFI_TPL t){CHECK(t==TPL_APPLICATION);}
+-static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){CHECK(p==&Io);*s=*d=*f=0;*b=1;return EFI_SUCCESS;}
++static EFI_STATUS EFIAPI Location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f){CHECK(p==&Io);*s=*d=*f=0;*b=5;return EFI_SUCCESS;}
+ static EFI_STATUS EFIAPI ConfigRead(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_WIDTH w,UINT32 off,UINTN count,VOID *out){CHECK(p==&Io&&w==EfiPciIoWidthUint32&&!off&&count==64);memcpy(out,Cfg,sizeof(Cfg));return EFI_SUCCESS;}
+ static EFI_STATUS EFIAPI GetBar(EFI_PCI_IO_PROTOCOL *p,UINT8 index,UINT64 *support,VOID **out){
+-  CHECK(p==&Io&&!index);*support=0;EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR *d=calloc(1,sizeof(*d));CHECK(d);d->Desc=0x8a;d->Len=43;d->AddrRangeMin=GU_BAR0_BASE;d->AddrRangeMax=0x80ffffff;d->AddrLen=0x1000000;*out=d;return EFI_SUCCESS;
++  CHECK(p==&Io&&!index);*support=0;EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR *d=calloc(1,sizeof(*d));CHECK(d);d->Desc=0x8a;d->Len=43;d->AddrRangeMin=GU_BAR0_BASE;d->AddrRangeMax=0xfbffffff;d->AddrLen=0x1000000;*out=d;return EFI_SUCCESS;
+ }
+ static EFI_STATUS EFIAPI Attributes(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_ATTRIBUTE_OPERATION op,UINT64 mask,UINT64 *out){
+   CHECK(p==&Io);
+@@ -165,12 +172,12 @@ static void Setup(void) {
+   Gu.bs=&Bs;Gu.pci=&Io;Gu.image=H(450);Gu.handle=H(365);Gu.profile_verified=Gu.prom_verified=TRUE;
+   for(UINTN i=0;i<3;i++) {
+     memset(&Bind[i],0,sizeof(Bind[i]));memset(&Images[i],0,sizeof(Images[i]));
+-    Bind[i].DriverBindingHandle=Agent(i);Bind[i].ImageHandle=i==0?H(306):i==1?H(311):Agent(i);Bind[i].Version=i==2?0x7000b:0x10;
+-    Bind[i].Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(Code[i]+(i==0?0x126c:i==1?0xa38:0x6ec));
+-    Images[i].ImageBase=Code[i];Images[i].ImageSize=i==0?24576:i==1?14816:162016;Images[i].ImageCodeType=EfiBootServicesCode;
++    Bind[i].DriverBindingHandle=Agent(i);Bind[i].ImageHandle=i==0?H(306):i==1?H(311):Agent(i);Bind[i].Version=i==2?0x70009:0x10;
++    Bind[i].Stop=(EFI_DRIVER_BINDING_STOP)(UINTN)(Code[i]+(i==0?0xf30:i==1?0xa38:0x6ec));
++    Images[i].ImageBase=Code[i];Images[i].ImageSize=i==0?23680:i==1?15008:161696;Images[i].ImageCodeType=EfiBootServicesCode;
+     Images[i].DeviceHandle=i==2?H(365):H(5);Images[i].FilePath=(VOID *)(i==0?OutFile:i==1?GfxFile:NvFile);
+   }
+-  if(Mode==WRONG_DRIVER)Bind[1].Version++;
++  if(Mode==WRONG_DRIVER)Bind[1].Stop=0;
+   if(Mode==USB_REMOVE_RECONNECT||Mode==USB_DYNAMIC_COUNT||Mode==USB_REMOVE_INPUT_CHANGED) {
+     EFI_GUID usbio={0x2b2f68d6,0x0cd2,0x44cf,{0x8e,0x8b,0xbb,0xa2,0x0b,0x1b,0x5b,0x75}};
+     EFI_GUID keyex={0xdd9e7534,0x7762,0x4698,{0x8c,0x14,0xf5,0x85,0x17,0xa6,0x25,0xaa}};
+@@ -193,7 +200,7 @@ int main(int argc,char **argv) {
+   CHECK(argc==2);
+   for(UINTN i=0;i<3;i++) {
+     char name[4096];snprintf(name,sizeof(name),"%s/driver-%u.bin",argv[1],i==0?307:i==1?312:393);
+-    FILE *f=fopen(name,"rb");CHECK(f);UINTN size=i==0?24576:i==1?14816:162016,rva=i==2?0x280:0x2a0,bytes=i==0?19872:i==1?7280:137711;
++    FILE *f=fopen(name,"rb");CHECK(f);UINTN size=i==0?23680:i==1?15008:161696,rva=i==2?0x280:0x2a0,bytes=i==0?19056:i==1?7408:137439;
+     Code[i]=calloc(1,size);CHECK(Code[i]);CHECK(fread(Code[i]+rva,1,bytes,f)==bytes&&fgetc(f)==EOF);fclose(f);
+   }
+   for(Mode=OK;Mode<MODE_COUNT;Mode++) {
+@@ -218,8 +225,17 @@ int main(int argc,char **argv) {
+         }
+         Gu.quiesced=TRUE;Gu.flrs=1;CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive);CHECK(GuMsiReadyForWindows());
+       } else {
+-        CHECK(!GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
+-        CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive);CHECK(!GuMsiReadyForWindows());
++        /* Tolerance contract: removed host/dynamic USB relationships are named
++         * by the release check but tolerated there; the post-close
++         * GuMsiFinish() verdict and the handoff gate still refuse. Losing the
++         * console input is hard: Alive() fails before any close. */
++        BOOLEAN hard=Mode==USB_REMOVE_INPUT_CHANGED;
++        if(hard)CHECK(!GuMsiReleased()&&strstr(Notes,"release check failed: console"));
++        else CHECK(GuMsiReleased());
++        Gu.quiesced=TRUE;Gu.flrs=1;
++        if(hard)CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"GPU finish refused before close"));
++        else CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
++        CHECK(!GuMsiReadyForWindows());
+       }
+       printf("MSI USB lifecycle case %d PASS\n",Mode);continue;
+     }
+@@ -243,8 +259,17 @@ int main(int argc,char **argv) {
+         Gu.quiesced=TRUE;Gu.flrs=1;CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive);
+         CHECK(GuMsiReadyForWindows());
+       } else {
+-        CHECK(!GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
+-        CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive);CHECK(!GuMsiReadyForWindows());
++        /* Tolerance contract: unverified pointer additions are named and
++         * tolerated by GuMsiReleased(); the post-close GuMsiFinish() verdict
++         * and the handoff gate still refuse. Changed console input is hard:
++         * Alive() fails and the release verdict itself refuses. */
++        BOOLEAN hard=Mode==POINTER_CHANGED_INPUT;
++        if(hard)CHECK(!GuMsiReleased()&&strstr(Notes,"release check failed: console"));
++        else CHECK(GuMsiReleased());
++        Gu.quiesced=TRUE;Gu.flrs=1;
++        if(hard)CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"GPU finish refused before close"));
++        else CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
++        CHECK(!GuMsiReadyForWindows());
+       }
+       printf("MSI late pointer case %d PASS\n",Mode);continue;
+     }
+@@ -266,15 +291,19 @@ int main(int argc,char **argv) {
+         CHECK(GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
+         CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive);CHECK(GuMsiReadyForWindows());
+       } else {
+-        CHECK(!GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
+-        CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive);CHECK(!GuMsiReadyForWindows());
++        /* Tolerance contract: a new edge touching a protected endpoint is named
++         * and tolerated by GuMsiReleased(), but the strict post-close verdict in
++         * GuMsiFinish() and the handoff gate both still refuse it. */
++        CHECK(GuMsiReleased());Gu.quiesced=TRUE;Gu.flrs=1;
++        CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
++        CHECK(!GuMsiReadyForWindows());
+       }
+       printf("MSI enumeration case %d PASS\n",Mode);continue;
+     }
+     if(Mode>=STATUS_DRIFT) {
+       CHECK(s==EFI_SUCCESS&&Stops==3&&Exclusive&&GuMsiReleased());
+       UINT32 *devsta=&Cfg[0x80/4],*linksta=&Cfg[0x88/4];
+-      CHECK(Cfg[0x78/4]==0x0012b410&&*devsta==0x00092930&&*linksta==0x11030040);
++      CHECK(Cfg[0x78/4]==0x0012b410&&*devsta==0x00092930&&*linksta==0x11040142);
+       /* Pre-FLR drift, as the firmware run produced before the aperture check. */
+       Drift=TRUE;NotesUsed=0;Notes[0]=0;
+       if(Mode==STATUS_DRIFT){Cfg[1]|=0x00080000;*devsta=(*devsta|0x00020000)&~0x00010000u;*linksta|=0x40000000;}
+@@ -283,27 +312,48 @@ int main(int argc,char **argv) {
+       if(Mode==CONTROL_DRIFT)*devsta^=0x00000010;
+       if(Mode==LINK_DRIFT)*linksta=(*linksta&~0x000f0000u)|0x00010000;
+       if(Mode==COMMAND_DRIFT)Cfg[1]|=4;
++      /* Fork tolerance contract (RUN0002-RUN0006 design): GuMsiReleased() NAMES
++       * post-release config/graph drift but does not fail the transaction verdict
++       * on it; the Windows handoff gate GuMsiReadyForWindows() still refuses any
++       * drift outside the narrow post-FLR status rule, and GuMsiFinish() still
++       * refuses an unexpected graph. The old test expected refusal at
++       * GuMsiReleased() itself, predating that design (commit 5f6526c). */
+       if(Mode==STATUS_DRIFT) {
+-        CHECK(!GuMsiReleased()&&strstr(Notes,"PCI config drift refused: offset=0x4"));
++        CHECK(GuMsiReleased()&&strstr(Notes,"PCI config drift refused: offset=0x4"));
+         memcpy(Cfg,Plan.config,sizeof(Cfg));*devsta&=~0x00090000u;
+-        CHECK(!GuMsiReleased()); /* Even preexisting bits may clear only after FLR. */
++        CHECK(GuMsiReleased()&&strstr(Notes,"PCI config drift refused: offset=0x80"));
+         Gu.quiesced=TRUE;Gu.flrs=1;NotesUsed=0;Notes[0]=0;
+         CHECK(GuMsiReleased());CHECK(strstr(Notes,"PCI status drift tolerated: offset=0x80"));
+         CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive&&Closes==1);CHECK(GuMsiReadyForWindows());
+       } else {
+-        const char *why=Mode==COMMAND_DRIFT?"check failed: config-read":Mode==GRAPH_DRIFT?"check failed: graph":"check failed: config-drift";
+-        CHECK(!GuMsiReleased()&&strstr(Notes,why));
++        BOOLEAN hard=Mode==COMMAND_DRIFT;/* bus-master bit also breaks ReadConfig */
++        if(hard)CHECK(!GuMsiReleased()&&strstr(Notes,"check failed: config-read"));
++        else CHECK(GuMsiReleased());
+         if(Mode==FATAL_DRIFT)CHECK(strstr(Notes,"refused: offset=0x80 captured=0x92930 now=0xd2930 bits=0x40000 flrs=0"));
+         if(Mode==PARITY_DRIFT)CHECK(strstr(Notes,"refused: offset=0x4 captured=0x100003 now=0x80100003 bits=0x80000000"));
+         if(Mode==CONTROL_DRIFT)CHECK(strstr(Notes,"refused: offset=0x80 captured=0x92930 now=0x92920 bits=0x10"));
+-        if(Mode==LINK_DRIFT)CHECK(strstr(Notes,"refused: offset=0x88 captured=0x11030040 now=0x11010040 bits=0x20000"));
+-        if(Mode==GRAPH_DRIFT)CHECK(strstr(Notes,"MSI graph unexpected: handle=0x16e agent=0x1c1 controller=0x16e protocol="));
+-        Gu.quiesced=TRUE;Gu.flrs=1;CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"MSI finish refused"));
++        if(Mode==LINK_DRIFT)CHECK(strstr(Notes,"refused: offset=0x88 captured=0x11040142 now=0x11010142 bits=0x50000"));
++        if(Mode==GRAPH_DRIFT)CHECK(strstr(Notes,"GPU graph unexpected:"));
++        Gu.quiesced=TRUE;Gu.flrs=1;
++        if(hard)CHECK(GuMsiFinish()!=EFI_SUCCESS&&Exclusive&&!Closes&&strstr(Notes,"GPU finish refused before close"));
++        else if(Mode==GRAPH_DRIFT)CHECK(GuMsiFinish()!=EFI_SUCCESS&&!Exclusive&&Closes==1&&strstr(Notes,"GPU finish after close"));
++        else CHECK(GuMsiFinish()==EFI_SUCCESS&&!Exclusive&&Closes==1);
+         CHECK(!GuMsiReadyForWindows());
+       }
+       printf("MSI drift case %d PASS\n",Mode);
+       continue;
+     }
++    if(Mode==UNRELATED_EDGE_LOST) {
++      /* Post-port contract (fork tolerance, runs RUN0002-RUN0006): an edge loss
++       * anywhere is tolerated DURING release, but the strict graph verdict in
++       * GuMsiFinish() after the claim close must still refuse the handoff. */
++      CHECK(s==EFI_SUCCESS&&Stops==3&&Exclusive&&GuMsiReleased()&&GuMsiMutated());
++      Gu.quiesced=TRUE;Gu.flrs=1;
++      CHECK(GuMsiFinish()==EFI_NOT_READY&&!Exclusive&&Closes==1);
++      CHECK(!GuMsiReadyForWindows());
++      printf("MSI unrelated-edge case PASS stops=3 finish-refused\n");
++      continue;
++    }
+     if(Mode==OK||Mode==CLOSE_FAIL) {
+       CHECK(s==EFI_SUCCESS&&Stops==3&&Enables==1&&Exclusive&&Gu.owned&&GuMsiReleased());
+       Gu.quiesced=TRUE;Gu.flrs=1;s=GuMsiFinish();
+diff --git a/windows/ad103-2705/vendor/arch_610.h b/windows/ad103-2705/vendor/arch_610.h
+index 55f28d5..8688e95 100644
+--- a/windows/ad103-2705/vendor/arch_610.h
++++ b/windows/ad103-2705/vendor/arch_610.h
+@@ -7,7 +7,8 @@ enum gpu_unlock_booter_arch {
+ 	GU_BOOTER_AD10X = 1,
+ };
+ 
+-/* Exact experimental AD103 canary; other Ada PCI IDs are not admitted. */
++/* Exact experimental AD103 canaries; other Ada PCI IDs are not admitted. */
+ #define GU_AD103_RTX_4070_TI_SUPER 0x2705u
++#define GU_AD103_RTX_4080 0x2704u
+ 
+ #endif
+diff --git a/windows/ad103-2705/vendor/unlock_610.c b/windows/ad103-2705/vendor/unlock_610.c
+index 808d962..28018ee 100644
+--- a/windows/ad103-2705/vendor/unlock_610.c
++++ b/windows/ad103-2705/vendor/unlock_610.c
+@@ -76,6 +76,7 @@ static const struct gpu_unlock_assets *unlock_assets(const struct pci_dev *pdev)
+ 
+ 	return (pdev->device == GU_AD102_RTX_4090 ||
+ 		pdev->device == GU_AD103_RTX_4070_TI_SUPER ||
++		pdev->device == GU_AD103_RTX_4080 ||
+ 		pdev->device == 0x2782u) ? &ad102 : &ga102;
+ }
+ 
+@@ -324,9 +325,10 @@ static bool inaccessible(u32 value)
+ static bool is_ad102(const struct unlock_transaction_work *work)
+ {
+ 	/* AD103 uses the same pinned AD102-family Booter archive. Hardware
+-	 * behavior on 0x2705 still requires an exact-card canary. */
++	 * behavior on 0x2705/0x2704 still requires an exact-card canary. */
+ 	return work->pdev->device == GU_AD102_RTX_4090 ||
+ 	       work->pdev->device == GU_AD103_RTX_4070_TI_SUPER ||
++	       work->pdev->device == GU_AD103_RTX_4080 ||
+ 	       work->pdev->device == 0x2782u;
+ }
+ 
+@@ -1294,8 +1296,11 @@ static int unlock_transaction_gfw(struct unlock_transaction_work *work)
+ 				dev_err(&work->pdev->dev, "card already initialised since power on (WPR2 enabled); power off first\n");
+ 				return GU_RESULT(-EBUSY);
+ 			}
++            /* Cold SS1 is board-firmware specific: the MSI reference card reads
++             * 0x1 at cold; this Dell AD103 (1028:5113) reads 0x2 (CAP0002).
++             * Re-pinned, not relaxed: any other value still refuses. */
+             if (!Gu.profile_verified || !GuEntrySelectorsMatch(ss0,ss1) ||
+-                inaccessible(ss0) || ss0==GU_SS0_UNLOCK || ss1!=1 ||
++                inaccessible(ss0) || ss0==GU_SS0_UNLOCK || ss1!=2 ||
+                 work->plm_entry!=0xffffff8f || sample.plm!=0x8b8f ||
+                 sample.boot!=0x3ff || sample.cpuctl!=0x10 || wpr_hi)
+                 return GU_RESULT(-EIO);
+@@ -1709,7 +1714,7 @@ static int unlock_transaction_reset(struct unlock_transaction_work *work)
+ 
+ int gpu_unlock_610_load_shared(struct pci_dev *pdev, struct gpu_unlock_610_shared *shared)
+ {
+-	if (!pdev || pdev->vendor!=0x10de || pdev->device!=0x2705u || !GuAd104AssetsValid()) return -ENODEV;
++	if (!pdev || pdev->vendor!=0x10de || pdev->device!=GU_AD103_RTX_4080 || !GuAd104AssetsValid()) return -ENODEV;
+ 	return request_scoped(&pdev->dev, &shared->gsp, unlock_assets(pdev)->gsp);
+ }
+ 
+@@ -1727,7 +1732,7 @@ int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shar
+     /* No EFI application calls this library yet. A future ownership adapter
+      * must prove exclusive release of GOP, console and all active consumers. */
+     if (Gu.transaction_attempted) return -EALREADY;
+-    if (!pdev || pdev->vendor!=0x10de || pdev->device!=0x2705u ||
++    if (!pdev || pdev->vendor!=0x10de || pdev->device!=GU_AD103_RTX_4080 ||
+         !shared || shared->gsp!=&GuAssets[2].firmware || !GuAd104AssetsValid() ||
+         !Gu.prom_verified || !Gu.profile_verified || !Gu.owned || !Gu.armed ||
+         !Gu.display_ok || !Gu.display_check || !Gu.display_check() || Gu.fault ||

@@ -1,0 +1,5 @@
+fp32_pedantic: 37.57 TFLOP/s; numerical checks passed
+fp16_fp32: 101.44 TFLOP/s; numerical checks passed
+bf16_fp32: 100.98 TFLOP/s; numerical checks passed
+e4m3_fp32 FAILED: AttributeError("'Tensor' object has no attribute 'copy'")
+Saved: scratch\bench\stock-20261027.json

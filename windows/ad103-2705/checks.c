@@ -27,8 +27,8 @@ BOOLEAN GuCheckConfig(const UINT32 Config[64], UINTN Segment, UINTN Bus,
   if (Out == NULL) return FALSE;
   *Out = Caps;
   /* PCI bus is assigned by firmware enumeration, not by the card: this board
-   * puts the GPU at bus 8 (captured), upstream's was bus 1. */
-  if (Config == NULL || Segment != 0 || Bus != 8 || Device != 0 || Function != 0)
+   * puts the GPU at bus 5 (captured CAP0002), upstream's was bus 1. */
+  if (Config == NULL || Segment != 0 || Bus != 5 || Device != 0 || Function != 0)
     return FALSE;
   if (Config[0] != GU_BOARD_ID || Config[0x2c / 4] != GU_BOARD_SUBSYSTEM ||
       ConfigByte(Config, 0x0b) != PCI_CLASS_DISPLAY ||

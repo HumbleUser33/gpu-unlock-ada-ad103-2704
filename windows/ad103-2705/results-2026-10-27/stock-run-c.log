@@ -1,0 +1,5 @@
+fp32_pedantic: 37.35 TFLOP/s; numerical checks passed
+fp16_fp32: 101.44 TFLOP/s; numerical checks passed
+bf16_fp32: 101.16 TFLOP/s; numerical checks passed
+e4m3_fp32: 191.36 TFLOP/s; numerical checks passed
+Saved: scratch\bench\stock-20261027-c.json

@@ -18,9 +18,9 @@ def analyze(data, build_id):
     if not isinstance(displays, list) or len(displays) > 32:
         raise ValueError('Malformed display inventory')
     targets = [(i, d) for i, d in enumerate(displays)
-               if d.get('vendor') == '0x10de' and d.get('device_id') == '0x2782']
+               if d.get('vendor') == '0x10de' and d.get('device_id') == '0x2704']
     exact = [(i, d) for i, d in targets
-             if d.get('subsystem_vendor') == '0x1462' and d.get('subsystem_device') == '0x5132'
+             if d.get('subsystem_vendor') == '0x1028' and d.get('subsystem_device') == '0x5113'
              and d.get('exact_expected_identity') is True]
     observed = len(targets) == len(exact) == 1 and data.get('pci_enumeration_complete') is True
     if data.get('target_id_count') != len(targets) or data.get('exact_identity_count') != len(exact):
@@ -119,7 +119,7 @@ def analyze(data, build_id):
         raise ValueError('Target location or device path is incomplete')
     result['location'] = target['location']
     config = bytes.fromhex(target.get('config64', ''))
-    if len(config) != 64 or config[:4] != bytes.fromhex('de108227') or config[44:48] != bytes.fromhex('62143251'):
+    if len(config) != 64 or config[:4] != bytes.fromhex('de100427') or config[44:48] != bytes.fromhex('28101351'):
         raise ValueError('Config header does not match the declared target identity')
     if config[11] != 3 or config[14] & 0x7f:
         raise ValueError('Target is not a type-0 display controller')

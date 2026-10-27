@@ -1,0 +1,5 @@
+fp32_pedantic: 37.31 TFLOP/s; numerical checks passed
+fp16_fp32: 99.08 TFLOP/s; numerical checks passed
+bf16_fp32: 99.10 TFLOP/s; numerical checks passed
+e4m3_fp32 FAILED: RuntimeError('Expected all tensors to be on the same device, but got other is on cuda:0, different from other tensors on cpu (when checking argument in method wrapper_CUDA__equal)')
+Saved: scratch\bench\stock-20261027-b.json
